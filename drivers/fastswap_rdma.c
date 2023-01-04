@@ -3,6 +3,9 @@
 #include "fastswap_rdma.h"
 #include <linux/slab.h>
 #include <linux/cpumask.h>
+#include <linux/kthread.h>
+#include <linux/sched.h>
+#include <linux/delay.h>
 
 static struct sswap_rdma_ctrl *gctrl;
 static int serverport;
@@ -343,6 +346,7 @@ static void sswap_rdma_free_queue(struct rdma_queue *q)
 static int sswap_rdma_init_queues(struct sswap_rdma_ctrl *ctrl)
 {
   int ret, i;
+  pr_info("num queues = %d\n", numqueues);
   for (i = 0; i < numqueues; ++i) {
     ret = sswap_rdma_init_queue(ctrl, i);
     if (ret) {
@@ -426,6 +430,7 @@ static void __exit sswap_rdma_cleanup_module(void)
   if (req_cache) {
     kmem_cache_destroy(req_cache);
   }
+  fastswap_print_timing_stats();
 }
 
 static void sswap_rdma_write_done(struct ib_cq *cq, struct ib_wc *wc)
@@ -464,7 +469,7 @@ static void sswap_rdma_read_done(struct ib_cq *cq, struct ib_wc *wc)
   kmem_cache_free(req_cache, req);
 }
 
-inline static int sswap_rdma_post_rdma(struct rdma_queue *q, struct rdma_req *qe,
+int sswap_rdma_post_rdma(struct rdma_queue *q, struct rdma_req *qe,
   struct ib_sge *sge, u64 roffset, enum ib_wr_opcode op)
 {
   struct ib_send_wr *bad_wr;
@@ -545,7 +550,7 @@ static int sswap_rdma_post_recv(struct rdma_queue *q, struct rdma_req *qe,
  * the dma map.
  * Don't touch the page with cpu after creating the request for it!
  * Deallocates the request if there was an error */
-inline static int get_req_for_page(struct rdma_req **req, struct ib_device *dev,
+int get_req_for_page(struct rdma_req **req, struct ib_device *dev,
 				struct page *page, enum dma_data_direction dir)
 {
   int ret;
@@ -644,7 +649,7 @@ static inline int drain_queue(struct rdma_queue *q)
   return 1;
 }
 
-static inline int write_queue_add(struct rdma_queue *q, struct page *page,
+int write_queue_add(struct rdma_queue *q, struct page *page,
 				  u64 roffset)
 {
   struct rdma_req *req;
@@ -658,6 +663,12 @@ static inline int write_queue_add(struct rdma_queue *q, struct page *page,
     pr_info_ratelimited("back pressure writes");
   }
 
+  if (dev == NULL)
+	BUG();
+
+  if (page == NULL)
+	BUG();
+  
   ret = get_req_for_page(&req, dev, page, DMA_TO_DEVICE);
   if (unlikely(ret))
     return ret;
@@ -698,12 +709,19 @@ int sswap_rdma_write(struct page *page, u64 roffset)
   int ret;
   struct rdma_queue *q;
 
+  timing_t write_time;
+
+  FASTSWAP_START_TIMING(write_t, write_time);
+
   VM_BUG_ON_PAGE(!PageSwapCache(page), page);
 
   q = sswap_rdma_get_queue(smp_processor_id(), QP_WRITE_SYNC);
+  BUG_ON(q == NULL);
   ret = write_queue_add(q, page, roffset);
   BUG_ON(ret);
   drain_queue(q);
+
+  FASTSWAP_END_TIMING(write_t, write_time);
   return ret;
 }
 EXPORT_SYMBOL(sswap_rdma_write);
@@ -745,6 +763,10 @@ int sswap_rdma_read_async(struct page *page, u64 roffset)
   struct rdma_queue *q;
   int ret;
 
+  timing_t read_async_time;
+
+  FASTSWAP_START_TIMING(read_async_t, read_async_time);
+
   VM_BUG_ON_PAGE(!PageSwapCache(page), page);
   VM_BUG_ON_PAGE(!PageLocked(page), page);
   VM_BUG_ON_PAGE(PageUptodate(page), page);
@@ -752,6 +774,8 @@ int sswap_rdma_read_async(struct page *page, u64 roffset)
   q = sswap_rdma_get_queue(smp_processor_id(), QP_READ_ASYNC);
   ret = begin_read(q, page, roffset);
   return ret;
+
+  FASTSWAP_END_TIMING(read_async_t, read_async_time);
 }
 EXPORT_SYMBOL(sswap_rdma_read_async);
 
@@ -760,12 +784,18 @@ int sswap_rdma_read_sync(struct page *page, u64 roffset)
   struct rdma_queue *q;
   int ret;
 
+  timing_t read_time;
+
+  FASTSWAP_START_TIMING(read_t, read_time);
+
   VM_BUG_ON_PAGE(!PageSwapCache(page), page);
   VM_BUG_ON_PAGE(!PageLocked(page), page);
   VM_BUG_ON_PAGE(PageUptodate(page), page);
 
   q = sswap_rdma_get_queue(smp_processor_id(), QP_READ_SYNC);
   ret = begin_read(q, page, roffset);
+
+  FASTSWAP_END_TIMING(read_t, read_time);
   return ret;
 }
 EXPORT_SYMBOL(sswap_rdma_read_sync);
@@ -809,22 +839,128 @@ inline struct rdma_queue *sswap_rdma_get_queue(unsigned int cpuid,
   };
 }
 
+int measure_timing = 1;
+
+const char *Timingstring[TIMING_NUM] = {
+	"================ Reads ================",
+	"read",
+	"read_async",
+
+	"================ Writes ===============",
+	"write",
+};
+
+u64 Timingstats[TIMING_NUM];
+DEFINE_PER_CPU(u64[TIMING_NUM], Timingstats_percpu);
+u64 Countstats[TIMING_NUM];
+DEFINE_PER_CPU(u64[TIMING_NUM], Countstats_percpu);
+
+void fastswap_get_timing_stats(void)
+{
+	int i;
+	int cpu;
+
+	for (i = 0; i < TIMING_NUM; i++) {
+		Timingstats[i] = 0;
+		Countstats[i] = 0;
+		for_each_possible_cpu(cpu) {
+			Timingstats[i] += per_cpu(Timingstats_percpu[i], cpu);
+			Countstats[i] += per_cpu(Countstats_percpu[i], cpu);
+		}
+	}
+}
+
+void fastswap_print_timing_stats(void)
+{
+	int i;
+	
+	fastswap_get_timing_stats();
+
+	pr_info("=============== Fastswap Timing Stats ================\n");
+	for (i = 0; i < TIMING_NUM; i++) {
+		if (Timingstring[i][0] == '=') {
+			pr_info("\n%s\n", Timingstring[i]);
+			continue;
+		}
+
+		if (measure_timing || Timingstats[i]) {
+			pr_info("%s: count %llu, timing %llu, average %llu\n",
+					Timingstring[i],
+					Countstats[i],
+					Timingstats[i],
+					Countstats[i] ?
+					Timingstats[i] / Countstats[i] : 0);
+		} else {
+			pr_info("%s: count %llu\n",
+					Timingstring[i],
+					Countstats[i]);
+		}
+	}
+
+	pr_info("\n");
+}
+
+void fastswap_clear_timing_stats(void)
+{
+	int i;
+	int cpu;
+
+	for (i = 0; i < TIMING_NUM; i++) {
+		Countstats[i] = 0;
+		Timingstats[i] = 0;
+		for_each_possible_cpu(cpu) {
+			per_cpu(Timingstats_percpu[i], cpu) = 0;
+			per_cpu(Countstats_percpu[i], cpu) = 0;
+		}
+	}
+}
+
+int receiver_loop(void *idx) {
+	unsigned int i = 0;
+	int t_id = * (int *)idx;
+
+	// kthread_should_stop call is important
+	while (!kthread_should_stop()) {
+		pr_info("Thread %d is still running...! %d secs\n", t_id, i);
+		i++;
+		if (i == 30)
+			break;
+		msleep(1000);
+	}
+	pr_info ("Thread %d stopped\n", t_id);
+	return 0;
+}
+
+
 static int __init sswap_rdma_init_module(void)
 {
   int ret;
+  char receiver_thread_name[20];
+  int receiver_thread_idx = 0;
+  struct task_struct *receiver_thread = NULL;
 
   pr_info("start: %s\n", __FUNCTION__);
-  pr_info("* RDMA BACKEND *");
+  pr_info("* RDMA BACKEND *\n");
 
   numcpus = num_online_cpus();
   numqueues = numcpus * 3;
 
+  pr_info("** NUM QUEUES = %d **\n", numqueues);
   req_cache = kmem_cache_create("sswap_req_cache", sizeof(struct rdma_req), 0,
                       SLAB_TEMPORARY | SLAB_HWCACHE_ALIGN, NULL);
 
   if (!req_cache) {
     pr_err("no memory for cache allocation\n");
     return -ENOMEM;
+  }
+
+  snprintf(receiver_thread_name, strlen(receiver_thread_name), "kthread_%d", 1);
+  receiver_thread = kthread_create(receiver_loop, &receiver_thread_idx, (const char *)receiver_thread_name);
+  if (receiver_thread != NULL) {
+	  wake_up_process(receiver_thread);
+	  pr_info("%s is running\n", receiver_thread_name);
+  } else {
+	  pr_info("kthread %s could not be created\n", receiver_thread_name);
   }
 
   ib_register_client(&sswap_rdma_ib_client);
@@ -842,6 +978,7 @@ static int __init sswap_rdma_init_module(void)
     return -ENODEV;
   }
 
+  fastswap_clear_timing_stats();
   pr_info("ctrl is ready for reqs\n");
   return 0;
 }

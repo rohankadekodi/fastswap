@@ -75,4 +75,45 @@ int sswap_rdma_read_sync(struct page *page, u64 roffset);
 int sswap_rdma_write(struct page *page, u64 roffset);
 int sswap_rdma_poll_load(int cpu);
 
+enum timing_category {
+	read_title_t,
+	read_t,
+	read_async_t,
+
+	write_title_t,
+	write_t,
+
+	TIMING_NUM,
+};
+
+extern int measure_timing;
+
+extern const char *Timingstring[TIMING_NUM];
+extern u64 Timingstats[TIMING_NUM];
+DECLARE_PER_CPU(u64[TIMING_NUM], Timingstats_percpu);
+extern u64 Countstats[TIMING_NUM];
+DECLARE_PER_CPU(u64[TIMING_NUM], Countstats_percpu);
+
+typedef struct timespec timing_t;
+
+#define INIT_TIMING(X) timing_t X = {0}
+
+#define FASTSWAP_START_TIMING(name, start) \
+	{if (measure_timing) getrawmonotonic(&start); }
+
+#define FASTSWAP_END_TIMING(name, start) \
+	{if (measure_timing) { \
+		INIT_TIMING(end); \
+		getrawmonotonic(&end); \
+		__this_cpu_add(Timingstats_percpu[name], \
+			(end.tv_sec - start.tv_sec) * 1000000000 + \
+			(end.tv_nsec - start.tv_nsec)); \
+	} \
+	__this_cpu_add(Countstats_percpu[name], 1); \
+	}
+
+void fastswap_get_timing_stats(void);
+void fastswap_print_timing_stats(void);
+void fastswap_clear_timing_stats(void);
+
 #endif
