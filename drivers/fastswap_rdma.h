@@ -33,18 +33,18 @@ struct rdma_req {
 struct sswap_rdma_ctrl;
 
 struct rdma_queue {
-  struct ib_qp *qp;
-  struct ib_cq *cq;
-  spinlock_t cq_lock;
-  enum qp_type qp_type;
+	struct ib_qp *qp;
+	struct ib_cq *cq;
+	spinlock_t cq_lock;
+	enum qp_type qp_type;
 
-  struct sswap_rdma_ctrl *ctrl;
+	struct sswap_rdma_ctrl *ctrl;
 
-  struct rdma_cm_id *cm_id;
-  int cm_error;
-  struct completion cm_done;
+	struct rdma_cm_id *cm_id;
+	int cm_error;
+	struct completion cm_done;
 
-  atomic_t pending;
+	atomic_t pending;
 };
 
 struct sswap_rdma_memregion {
@@ -52,20 +52,46 @@ struct sswap_rdma_memregion {
     u32 key;
 };
 
+struct sswap_rdma_info {
+	uint64_t buf;
+	uint32_t rkey;
+	uint32_t size;
+}
+
 struct sswap_rdma_ctrl {
-  struct sswap_rdma_dev *rdev; // TODO: move this to queue
-  struct rdma_queue *queues;
-  struct sswap_rdma_memregion servermr;
+	struct sswap_rdma_dev *rdev; // TODO: move this to queue
+	struct rdma_queue *queues;
+	struct sswap_rdma_memregion servermr;
 
-  union {
-    struct sockaddr addr;
-    struct sockaddr_in addr_in;
-  };
+	struct ib_recv_wr rq_wr;
+	struct ib_sge recv_sgl;
 
-  union {
-    struct sockaddr srcaddr;
-    struct sockaddr_in srcaddr_in;
-  };
+	u64 recv_dma_addr;
+	char *rdma_buf;
+	u64 rdma_dma_addr;
+	struct ib_mr *rdma_mr;
+	uint32_t remote_rkey;
+	uint64_t remote_addr;
+	uint32_t remote_len;
+
+	char *start_buf;
+	u64 start_dma_addr;
+	struct ib_mr *start_mr;
+
+	struct sswap_rdma_info recv_buf;
+	struct ib_mr *recv_mr;
+
+	struct ib_send_wr sq_wr;
+
+	union {
+		struct sockaddr addr;
+		struct sockaddr_in addr_in;
+	};
+
+	union {
+		struct sockaddr srcaddr;
+		struct sockaddr_in srcaddr_in;
+	};
 };
 
 struct rdma_queue *sswap_rdma_get_queue(unsigned int idx, enum qp_type type);
