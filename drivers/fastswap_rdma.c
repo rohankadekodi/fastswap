@@ -332,8 +332,8 @@ static int sswap_bind_client(struct sswap_cb *cb)
 	struct sockaddr_storage sin;
 	int ret;
 
-	cb->addr_str = serverip
-	in4_pton(serverip, -1, cb->addr, NULL);
+	cb->addr_str = serverip;
+	in4_pton(serverip, -1, cb->addr, -1, NULL);
 	cb->addr_type = AF_INET;
 	cb->port = serverport;
 
@@ -842,7 +842,7 @@ static int sswap_rdma_init_queue(struct sswap_rdma_ctrl *ctrl,
 	cb->state = IDLE;
 	cb->size = 64;
 	cb->txdepth = 64;
-	cb->addr_str
+	cb->addr_str = serverip;
 	init_waitqueue_head(&cb->sem);
 
 	pr_info("start: %s\n", __FUNCTION__);
