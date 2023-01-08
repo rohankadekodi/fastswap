@@ -341,64 +341,11 @@ error:
 	return ret;
 }
 
-static void rmserver_init_conn_param(struct rmserver_cb *cb,
-				  struct rdma_conn_param *conn_param)
-{
-	memset(conn_param, 0, sizeof(*conn_param));
-	conn_param->responder_resources = 1;
-	conn_param->initiator_depth = 1;
-	conn_param->retry_count = 7;
-	conn_param->rnr_retry_count = 7;
-	if (cb->self_create_qp)
-		conn_param->qp_num = cb->qp->qp_num;
-}
-
-static int rmserver_self_modify_qp(struct rmserver_cb *cb, struct rdma_cm_id *id)
-{
-	struct ibv_qp_attr qp_attr;
-	int qp_attr_mask, ret;
-
-	qp_attr.qp_state = IBV_QPS_INIT;
-	ret = rdma_init_qp_attr(id, &qp_attr, &qp_attr_mask);
-	if (ret)
-		return ret;
-
-	ret = ibv_modify_qp(cb->qp, &qp_attr, qp_attr_mask);
-	if (ret)
-		return ret;
-
-	qp_attr.qp_state = IBV_QPS_RTR;
-	ret = rdma_init_qp_attr(id, &qp_attr, &qp_attr_mask);
-	if (ret)
-		return ret;
-
-	ret = ibv_modify_qp(cb->qp, &qp_attr, qp_attr_mask);
-	if (ret)
-		return ret;
-
-	qp_attr.qp_state = IBV_QPS_RTS;
-	ret = rdma_init_qp_attr(id, &qp_attr, &qp_attr_mask);
-	if (ret)
-		return ret;
-
-	return ibv_modify_qp(cb->qp, &qp_attr, qp_attr_mask);
-}
-
 static int rmserver_accept(struct rmserver_cb *cb)
 {
-	struct rdma_conn_param conn_param;
 	int ret;
 
-	if (cb->self_create_qp) {
-		ret = rmserver_self_modify_qp(cb, cb->child_cm_id);
-		if (ret)
-			return ret;
-
-		rmserver_init_conn_param(cb, &conn_param);
-		ret = rdma_accept(cb->child_cm_id, &conn_param);
-	} else {
-		ret = rdma_accept(cb->child_cm_id, NULL);
-	}
+	ret = rdma_accept(cb->child_cm_id, NULL);
 	if (ret) {
 		perror("rdma_accept");
 		return ret;
@@ -522,31 +469,7 @@ static int rmserver_create_qp(struct rmserver_cb *cb)
 	init_attr.qp_type = IBV_QPT_RC;
 	init_attr.send_cq = cb->cq;
 	init_attr.recv_cq = cb->cq;
-	id = cb->server ? cb->child_cm_id : cb->cm_id;
-
-	if (cb->self_create_qp) {
-		cb->qp = ibv_create_qp(cb->pd, &init_attr);
-		if (!cb->qp) {
-			perror("ibv_create_qp");
-			return -1;
-		}
-
-		struct ibv_qp_attr attr;
-		attr.qp_state = IBV_QPS_INIT;
-		attr.pkey_index = 0;
-		attr.port_num = id->port_num;
-		attr.qp_access_flags = 0;
-
-		ret = ibv_modify_qp(cb->qp, &attr,
-				    IBV_QP_STATE | IBV_QP_PKEY_INDEX |
-				    IBV_QP_PORT | IBV_QP_ACCESS_FLAGS);
-
-		if (ret) {
-			perror("ibv_modify_qp");
-			ibv_destroy_qp(cb->qp);
-		}
-		return ret ? -1 : 0;
-	}
+	id = cb->child_cm_id;
 
 	ret = rdma_create_qp(id, cb->pd, &init_attr);
 	if (!ret)
