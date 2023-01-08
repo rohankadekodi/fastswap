@@ -16,7 +16,7 @@
 #define TEST_Z(x)  do { if (!(x)) die("error: " #x " failed (returned zero/null)."); } while (0)
 
 const size_t BUFFER_SIZE = 1024 * 1024 * 1024 * 32l;
-const unsigned int NUM_PROCS = 8;
+const unsigned int NUM_PROCS = 48;
 const unsigned int NUM_QUEUES_PER_PROC = 3;
 const unsigned int NUM_QUEUES = NUM_PROCS * NUM_QUEUES_PER_PROC;
 const size_t PAGE_SIZE = 4096;
@@ -951,14 +951,17 @@ int main(int argc, char **argv)
 
 		// handle connection requests
 		while (rdma_get_cm_event(ec, &event) == 0) {
-		struct rdma_cm_event event_copy;
+			struct rdma_cm_event event_copy;
 
-		memcpy(&event_copy, event, sizeof(*event));
-		rdma_ack_cm_event(event);
+			memcpy(&event_copy, event, sizeof(*event));
+			rdma_ack_cm_event(event);
 
-		if (on_event(&event_copy) || cb->state == rmserver_cb::CONNECTED)
-			break;
+			printf("received event to connect. Calling on_event()\n");
+			if (on_event(&event_copy) || cb->state == rmserver_cb::CONNECTED)
+				break;
 		}
+
+		printf("Something went wrong in rdma_get_cm_event()\n");
 	}
 
 	printf("done connecting all queues\n");
