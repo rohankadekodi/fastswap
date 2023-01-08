@@ -105,20 +105,20 @@ static void sswap_rdma_destroy_queue_ib(struct rdma_queue *q)
   ib_free_cq(q->cq);
 }
 
-static int sswap_setup_buffers(struct sswap_cb *cb)
+static int sswap_setup_buffers(struct sswap_cb *cb, struct sswap_rdma_dev *rdev)
 {
 	int ret;
 
-	cb->recv_dma_addr = ib_dma_map_single(cb->pd->device,
+	cb->recv_dma_addr = ib_dma_map_single(rdev->pd->device,
 					      &cb->recv_buf,
 					      sizeof(cb->recv_buf), DMA_BIDIRECTIONAL);
 	dma_unmap_addr_set(cb, recv_mapping, cb->recv_dma_addr);
-	cb->send_dma_addr = ib_dma_map_single(cb->pd->device,
+	cb->send_dma_addr = ib_dma_map_single(rdev->pd->device,
 					      &cb->send_buf, sizeof(cb->send_buf),
 					      DMA_BIDIRECTIONAL);
 	dma_unmap_addr_set(cb, send_mapping, cb->send_dma_addr);
 
-	cb->rdma_buf = ib_dma_alloc_coherent(cb->pd->device, cb->size,
+	cb->rdma_buf = ib_dma_alloc_coherent(rdev->pd->device, cb->size,
 					     &cb->rdma_dma_addr,
 					     GFP_KERNEL);
 	if (!cb->rdma_buf) {
@@ -128,14 +128,14 @@ static int sswap_setup_buffers(struct sswap_cb *cb)
 	dma_unmap_addr_set(cb, rdma_mapping, cb->rdma_dma_addr);
 	cb->page_list_len = (((cb->size - 1) & PAGE_MASK) + PAGE_SIZE)
 		>> PAGE_SHIFT;
-	cb->reg_mr = ib_alloc_mr(cb->pd,  IB_MR_TYPE_MEM_REG,
+	cb->reg_mr = ib_alloc_mr(rdev->pd,  IB_MR_TYPE_MEM_REG,
 				 cb->page_list_len);
 	if (IS_ERR(cb->reg_mr)) {
 		ret = PTR_ERR(cb->reg_mr);
 		goto bail;
 	}
 
-	cb->start_buf = ib_dma_alloc_coherent(cb->pd->device, cb->size,
+	cb->start_buf = ib_dma_alloc_coherent(rdev->pd->device, cb->size,
 					      &cb->start_dma_addr,
 					      GFP_KERNEL);
 	if (!cb->start_buf) {
@@ -153,11 +153,11 @@ static int sswap_setup_buffers(struct sswap_cb *cb)
 	if (cb->dma_mr && !IS_ERR(cb->dma_mr))
 		ib_dereg_mr(cb->dma_mr);
 	if (cb->rdma_buf) {
-		ib_dma_free_coherent(cb->pd->device, cb->size, cb->rdma_buf,
+		ib_dma_free_coherent(rdev->pd->device, cb->size, cb->rdma_buf,
 				     cb->rdma_dma_addr);
 	}
 	if (cb->start_buf) {
-		ib_dma_free_coherent(cb->pd->device, cb->size, cb->start_buf,
+		ib_dma_free_coherent(rdev->pd->device, cb->size, cb->start_buf,
 				     cb->start_dma_addr);
 	}
 	return ret;
@@ -185,17 +185,21 @@ static struct sswap_rdma_dev *sswap_rdma_get_device(struct sswap_cb *cb)
       pr_err("ib_alloc_pd\n");
       goto out_free_dev;
     }
+	pr_info("rdev->pd after ib_alloc_pd = %p\n", rdev->pd);
 
     if (!(rdev->dev->attrs.device_cap_flags &
           IB_DEVICE_MEM_MGT_EXTENSIONS)) {
       pr_err("memory registrations not supported\n");
       goto out_free_pd;
     }
+	pr_info("Memory registrations are supported\n");
+	cb->pd = rdev->pd;
 
-    ret = sswap_setup_buffers(cb);
+    ret = sswap_setup_buffers(cb, rdev);
     if (ret) {
       pr_info("sswap_setup_buffers() failed with ret value %d\n", ret);
     }
+	pr_info("sswap_setup_buffers() returned %d\n", ret);
 
     gctrl->rdev = rdev;
   }
@@ -212,29 +216,31 @@ out_err:
 
 static int sswap_create_qp(struct sswap_cb *cb)
 {
-  struct sswap_rdma_dev *rdev = gctrl->rdev;
+	struct sswap_rdma_dev *rdev = gctrl->rdev;
 	struct ib_qp_init_attr init_attr;
 	int ret;
 
-  pr_info("start: %s\n", __FUNCTION__);
+  	pr_info("start: %s\n", __FUNCTION__);
 
 	memset(&init_attr, 0, sizeof(init_attr));
-	init_attr.cap.max_send_wr = cb->txdepth;
-	init_attr.cap.max_recv_wr = 2;
+	init_attr.event_handler = sswap_rdma_qp_event;
+	init_attr.cap.max_send_wr = QP_MAX_SEND_WR;
+	init_attr.cap.max_recv_wr = QP_MAX_RECV_WR;
 	init_attr.cap.max_recv_sge = 1;
 	init_attr.cap.max_send_sge = 1;
+	init_attr.sq_sig_type = IB_SIGNAL_REQ_WR;
 	init_attr.qp_type = IB_QPT_RC;
 	init_attr.send_cq = cb->cq;
 	init_attr.recv_cq = cb->cq;
 	init_attr.sq_sig_type = IB_SIGNAL_REQ_WR;
 
 	ret = rdma_create_qp(cb->cm_id, rdev->pd, &init_attr);
-  if (ret) {
-    pr_err("rdma_create_qp failed: %d\n", ret);
-    return ret;
-  }
+	if (ret) {
+		pr_err("rdma_create_qp failed: %d\n", ret);
+		return ret;
+	}
 
-  cb->qp = cb->cm_id->qp;
+	cb->qp = cb->cm_id->qp;
 	return ret;
 }
 
@@ -242,8 +248,8 @@ static int sswap_setup_qp(struct sswap_cb *cb, struct rdma_cm_id *cm_id)
 {
 	int ret;
 	struct ib_cq_init_attr attr = {0};
-  struct ib_device *ibdev = gctrl->rdev->dev;
-  int comp_vector = 0;
+	struct ib_device *ibdev = gctrl->rdev->dev;
+	int comp_vector = 0;
 
 	// cb->pd = ib_alloc_pd(cm_id->device);
 	// if (IS_ERR(cb->pd)) {
@@ -271,9 +277,9 @@ static int sswap_setup_qp(struct sswap_cb *cb, struct rdma_cm_id *cm_id)
 	pr_info("created qp %p\n", cb->qp);
 	return 0;
 
- err1:
+err1:
 	ib_destroy_cq(cb->cq);
- err2:
+err2:
 	ib_dealloc_pd(cb->pd);
 	return ret;
 }
@@ -281,36 +287,39 @@ static int sswap_setup_qp(struct sswap_cb *cb, struct rdma_cm_id *cm_id)
 
 static int sswap_rdma_addr_resolved(struct sswap_cb *cb)
 {
-  int ret;
-  struct sswap_rdma_dev *rdev = NULL;
+	int ret;
+  	struct sswap_rdma_dev *rdev = NULL;
 
-  pr_info("start: %s\n", __FUNCTION__);
+  	pr_info("start: %s\n", __FUNCTION__);
 
-  rdev = sswap_rdma_get_device(cb);
-  if (!rdev) {
-    pr_err("no device found\n");
-    return -ENODEV;
-  }
+	rdev = sswap_rdma_get_device(cb);
+	if (!rdev) {
+		pr_err("no device found\n");
+		return -ENODEV;
+	}
+	pr_info("sswap_rdma_get_device() returned rdev = %p\n", rdev);
 
-  /*
-  ret = sswap_rdma_create_queue_ib(q);
-  if (ret) {
-    return ret;
-  }
-  */
+	/*
+	ret = sswap_rdma_create_queue_ib(q);
+	if (ret) {
+		return ret;
+	}
+	*/
 
-  ret = sswap_setup_qp(cb, cb->cm_id);
+	ret = sswap_setup_qp(cb, cb->cm_id);
 	if (ret) {
 		pr_info("setup_qp() failed\n");
 	}
+	pr_info("sswap_setup_qp() returned %d\n", ret);
 
-  ret = rdma_resolve_route(cb->cm_id, CONNECTION_TIMEOUT_MS);
-  if (ret) {
-    pr_err("rdma_resolve_route failed\n");
-    //sswap_rdma_destroy_queue_ib(cb);
-  }
+  	ret = rdma_resolve_route(cb->cm_id, CONNECTION_TIMEOUT_MS);
+	if (ret) {
+		pr_err("rdma_resolve_route failed\n");
+		//sswap_rdma_destroy_queue_ib(cb);
+	}
+	pr_info("rdma_resolve_route() returned %d\n", ret);
 
-  return 0;
+	return 0;
 }
 
 static int reg_supported(struct ib_device *dev)
@@ -348,31 +357,37 @@ static void fill_sockaddr(struct sockaddr_storage *sin, struct sswap_cb *cb)
 static int sswap_rdma_route_resolved(struct sswap_cb *cb,
 				     struct rdma_conn_param *conn_params)
 {
-	struct rdma_conn_param conn_param = {};
+	struct rdma_conn_param param = {};
 	int ret;
 
-	memset(&conn_param, 0, sizeof(conn_param));
-	conn_param.responder_resources = 1;
-	conn_param.initiator_depth = 1;
-	conn_param.retry_count = 10;
+	// memset(&conn_param, 0, sizeof(param));
+	param.qp_num = cb->qp->qp_num;
+	param.flow_control = 1;
+	param.responder_resources = 16;
+	param.initiator_depth = 16;
+	param.retry_count = 7;
+	param.rnr_retry_count = 7;
+	param.private_data = NULL;
+	param.private_data_len = 0;
 
-	pr_info("max_qp_rd_atom=%d max_qp_init_rd_atom=%d\n",
-		gctrl->rdev->dev->attrs.max_qp_rd_atom,
+	pr_info("%s: max_qp_rd_atom=%d max_qp_init_rd_atom=%d\n",
+		__FUNCTION__, gctrl->rdev->dev->attrs.max_qp_rd_atom,
 		gctrl->rdev->dev->attrs.max_qp_init_rd_atom);
 
-	ret = rdma_connect(cb->cm_id, &conn_param);
+	ret = rdma_connect(cb->cm_id, &param);
 	if (ret) {
 		pr_info("rdma_connect error %d\n", ret);
 		return ret;
 	}
+	pr_info("%s: rdma_connect() returned %d\n", __FUNCTION__, ret);	
 
-	wait_event_interruptible(cb->sem, cb->state >= CONNECTED);
-	if (cb->state == ERROR) {
-		pr_info("wait for CONNECTED state %d\n", cb->state);
-		return -1;
-	}
+	// wait_event_interruptible(cb->sem, cb->state >= CONNECTED);
+	// if (cb->state == ERROR) {
+	// 	pr_info("wait for CONNECTED state %d\n", cb->state);
+	// 	return -1;
+	// }
 
-	pr_info("rdma_connect successful\n");
+	// pr_info("rdma_connect successful\n");
 	return 0;
 }
 
@@ -385,76 +400,78 @@ static int sswap_rdma_conn_established(struct rdma_queue *q)
 static int sswap_rdma_cm_handler(struct rdma_cm_id *cm_id,
     struct rdma_cm_event *ev)
 {
-  struct sswap_cb *cb = cm_id->context;
-  int ret = 0;
+	struct sswap_cb *cb = cm_id->context;
+	int ret = 0;
 
-  pr_info("cm_handler msg: %s (%d) status %d id %p\n", rdma_event_msg(ev->event),
-    ev->event, ev->status, cm_id);
+	pr_info("cm_handler msg: %s (%d) status %d id %p\n", rdma_event_msg(ev->event),
+		ev->event, ev->status, cm_id);
 
-  switch (ev->event) {
-  case RDMA_CM_EVENT_ADDR_RESOLVED:
-	  cb->state = ADDR_RESOLVED;
-    ret = sswap_rdma_addr_resolved(cb);
-	  // ret = rdma_resolve_route(cm_id, 2000);
-	  if (ret) {
-		  pr_info("sswap_rdma_addr_resolved() error %d\n", ret);
-		  wake_up_interruptible(&cb->sem);
-	  }
-	  break;
-  case RDMA_CM_EVENT_ROUTE_RESOLVED:
-	  cb->state = ROUTE_RESOLVED;
-	  ret = sswap_rdma_route_resolved(cb, &ev->param.conn);
-	  wake_up_interruptible(&cb->sem);
-	  break;
-  case RDMA_CM_EVENT_CONNECT_REQUEST:
-	  cb->state = CONNECT_REQUEST;
-	  cb->child_cm_id = cm_id;
-	  wake_up_interruptible(&cb->sem);
-	  break;
-  case RDMA_CM_EVENT_ESTABLISHED:
-	  pr_info("ESTABLISHED\n");
-	  cb->state = CONNECTED;
-	  //queue->cm_error = sswap_rdma_conn_established(queue);
-	  /* complete cm_done regardless of success/failure */
-	  //complete(&queue->cm_done);
-	  wake_up_interruptible(&cb->sem);
-	  break;
-  case RDMA_CM_EVENT_REJECTED:
-	  cb->state = ERROR;
-	  pr_err("connection rejected\n");
-	  wake_up_interruptible(&cb->sem);
-	  break;
-  case RDMA_CM_EVENT_ADDR_ERROR:
-  case RDMA_CM_EVENT_ROUTE_ERROR:
-  case RDMA_CM_EVENT_CONNECT_ERROR:
-  case RDMA_CM_EVENT_UNREACHABLE:
-	  pr_err("CM error event %d\n", ev->event);
-	  ret = -ECONNRESET;
-	  cb->state = ERROR;
-	  wake_up_interruptible(&cb->sem);
-	  break;
-  case RDMA_CM_EVENT_DISCONNECTED:
-  case RDMA_CM_EVENT_ADDR_CHANGE:
-  case RDMA_CM_EVENT_TIMEWAIT_EXIT:
-	  pr_err("CM connection closed %d\n", ev->event);
-	  wake_up_interruptible(&cb->sem);
-	  break;
-  case RDMA_CM_EVENT_DEVICE_REMOVAL:
-	  /* device removal is handled via the ib_client API */
-	  wake_up_interruptible(&cb->sem);
-	  break;
-  default:
-	  pr_err("CM unexpected event: %d\n", ev->event);
-	  wake_up_interruptible(&cb->sem);
-	  break;
-  }
+	switch (ev->event) {
+	case RDMA_CM_EVENT_ADDR_RESOLVED:
+			cb->state = ADDR_RESOLVED;
+			ret = sswap_rdma_addr_resolved(cb);
+			// ret = rdma_resolve_route(cm_id, 2000);
+			if (ret) {
+				pr_info("sswap_rdma_addr_resolved() error %d\n", ret);
+				// wake_up_interruptible(&cb->sem);
+			}
+			// wake_up_interruptible(&cb->sem);
+			pr_info("%s: Address has been resolved\n", __FUNCTION__);
+			break;
+	case RDMA_CM_EVENT_ROUTE_RESOLVED:
+			cb->state = ROUTE_RESOLVED;
+			ret = sswap_rdma_route_resolved(cb, &ev->param.conn);
+			// wake_up_interruptible(&cb->sem);
+			break;
+	case RDMA_CM_EVENT_CONNECT_REQUEST:
+			cb->state = CONNECT_REQUEST;
+			cb->child_cm_id = cm_id;
+			// wake_up_interruptible(&cb->sem);
+			break;
+	case RDMA_CM_EVENT_ESTABLISHED:
+			pr_info("ESTABLISHED\n");
+			cb->state = CONNECTED;
+			//queue->cm_error = sswap_rdma_conn_established(queue);
+			/* complete cm_done regardless of success/failure */
+			//complete(&queue->cm_done);
+			wake_up_interruptible(&cb->sem);
+			break;
+	case RDMA_CM_EVENT_REJECTED:
+			cb->state = ERROR;
+			pr_err("connection rejected\n");
+			wake_up_interruptible(&cb->sem);
+			break;
+	case RDMA_CM_EVENT_ADDR_ERROR:
+	case RDMA_CM_EVENT_ROUTE_ERROR:
+	case RDMA_CM_EVENT_CONNECT_ERROR:
+	case RDMA_CM_EVENT_UNREACHABLE:
+			pr_err("CM error event %d\n", ev->event);
+			ret = -ECONNRESET;
+			cb->state = ERROR;
+			wake_up_interruptible(&cb->sem);
+			break;
+	case RDMA_CM_EVENT_DISCONNECTED:
+	case RDMA_CM_EVENT_ADDR_CHANGE:
+	case RDMA_CM_EVENT_TIMEWAIT_EXIT:
+			pr_err("CM connection closed %d\n", ev->event);
+			wake_up_interruptible(&cb->sem);
+			break;
+	case RDMA_CM_EVENT_DEVICE_REMOVAL:
+			/* device removal is handled via the ib_client API */
+			wake_up_interruptible(&cb->sem);
+			break;
+	default:
+			pr_err("CM unexpected event: %d\n", ev->event);
+			wake_up_interruptible(&cb->sem);
+			break;
+	}
 
-  //if (cm_error) {
-	  //queue->cm_error = cm_error;
-	  //complete(&queue->cm_done);
-  //}
+	//if (cm_error) {
+		//queue->cm_error = cm_error;
+		//complete(&queue->cm_done);
+	//}
 
-  return 0;
+	return 0;
 }
 
 inline static int sswap_rdma_wait_for_cm(struct rdma_queue *queue)
@@ -481,22 +498,22 @@ static int sswap_bind_client(struct sswap_cb *cb)
 	cb->addr_type = AF_INET;
 	cb->port = serverport;
 
-	fill_sockaddr(&sin, cb);
+	// fill_sockaddr(&sin, cb);
 
-	ret = rdma_resolve_addr(cb->cm_id, NULL, (struct sockaddr *)&sin, 2000);
-	if (ret) {
-		pr_info("rdma_resolve_addr() failed\n");
-		return ret;
-	}
-
-	// ret = rdma_resolve_addr(cb->cm_id, &gctrl->srcaddr, &gctrl->addr, CONNECTION_TIMEOUT_MS);
+	// ret = rdma_resolve_addr(cb->cm_id, NULL, (struct sockaddr *)&sin, 2000);
 	// if (ret) {
 	// 	pr_info("rdma_resolve_addr() failed\n");
 	// 	return ret;
 	// }
 
-	wait_event_interruptible(cb->sem, cb->state >= ROUTE_RESOLVED);
-	if (cb->state != ROUTE_RESOLVED) {
+	ret = rdma_resolve_addr(cb->cm_id, &gctrl->srcaddr, &gctrl->addr, CONNECTION_TIMEOUT_MS);
+	if (ret) {
+		pr_info("rdma_resolve_addr() failed\n");
+		return ret;
+	}
+
+	wait_event_interruptible(cb->sem, cb->state >= CONNECTED);
+	if (cb->state != CONNECTED) {
 		pr_info( 
 		       "addr/route resolution did not resolve: state %d\n",
 		       cb->state);
@@ -841,7 +858,7 @@ static int sswap_rdma_init_queue(struct sswap_rdma_ctrl *ctrl,
 	struct rdma_queue *queue;
 	int ret;
 	struct sswap_cb *cb;
-  struct ib_recv_wr *bad_wr;
+	struct ib_recv_wr *bad_wr;
 
 	cb = &ctrl->cbs[idx];
 
@@ -870,8 +887,8 @@ static int sswap_rdma_init_queue(struct sswap_rdma_ctrl *ctrl,
 
 	sswap_run_client(cb);
 
-  sswap_setup_wr(cb);
-  ret = ib_post_recv(cb->qp, &cb->rq_wr, &bad_wr);
+	sswap_setup_wr(cb);
+	ret = ib_post_recv(cb->qp, &cb->rq_wr, &bad_wr);
 	if (ret) {
 		pr_info("ib_post_recv() failed\n");
 	}

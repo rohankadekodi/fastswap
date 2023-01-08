@@ -16,6 +16,7 @@
 #define TEST_Z(x)  do { if (!(x)) die("error: " #x " failed (returned zero/null)."); } while (0)
 
 const size_t BUFFER_SIZE = 1024 * 1024 * 1024 * 32l;
+const size_t CB_BUFFER_SIZE = 1024 * 1024 * 4l;
 const unsigned int NUM_PROCS = 48;
 const unsigned int NUM_QUEUES_PER_PROC = 3;
 const unsigned int NUM_QUEUES = NUM_PROCS * NUM_QUEUES_PER_PROC;
@@ -81,7 +82,8 @@ enum test_state {
 	RDMA_WRITE_COMPLETE,
   	RDMA_REQUESTED,
   	RDMA_RECEIVED,
-	RDMA_RESPONDED,
+	RDMA_RESPONSE_STARTED,
+	RDMA_RESPONSE_SENT,
 	DISCONNECTED,
 	ERROR
 };
@@ -90,7 +92,6 @@ enum request_type {
 	PAGE_FAULT,
 	PAGE_EVICT
 };
-
 
 /*
  * Control block struct.
@@ -153,13 +154,21 @@ struct rmserver_cb {
     	INIT,
     	CONNECTED
   	} state;
+
+	struct ctrl *ctrl;
+	void *buffer;
+	void *send_buffer;
+	struct ibv_mr *mr_buffer;
+	struct ibv_mr *mr_send_buffer;
 };
 
 struct ctrl {
 	struct rmserver_cb *cbs;
 	struct queue *queues;
 	struct ibv_mr *mr_buffer;
+	struct ibv_mr *mr_send_buffer;
 	void *buffer;
+	void *send_buffer;
 	struct device *dev;
 
 	struct ibv_comp_channel *comp_channel;
@@ -297,6 +306,7 @@ static int rmserver_cq_event_handler(struct rmserver_cb *cb)
 
 		switch (wc.opcode) {
 		case IBV_WC_SEND:
+			cb->req_state = RDMA_RESPONSE_SENT;
 			break;
 
 		case IBV_WC_RDMA_WRITE:
@@ -341,23 +351,23 @@ error:
 	return ret;
 }
 
-static int rmserver_accept(struct rmserver_cb *cb)
-{
-	int ret;
+// static int rmserver_accept(struct rmserver_cb *cb)
+// {
+// 	int ret;
 
-	ret = rdma_accept(cb->child_cm_id, NULL);
-	if (ret) {
-		perror("rdma_accept");
-		return ret;
-	}
+// 	ret = rdma_accept(cb->child_cm_id, NULL);
+// 	if (ret) {
+// 		perror("rdma_accept");
+// 		return ret;
+// 	}
 
-	sem_wait(&cb->sem);
-	if (cb->req_state == ERROR) {
-		fprintf(stderr, "wait for CONNECTED state %d\n", cb->state);
-		return -1;
-	}
-	return 0;
-}
+// 	sem_wait(&cb->sem);
+// 	if (cb->req_state == ERROR) {
+// 		fprintf(stderr, "wait for CONNECTED state %d\n", cb->state);
+// 		return -1;
+// 	}
+// 	return 0;
+// }
 
 // static int rmserver_disconnect(struct rmserver_cb *cb, struct rdma_cm_id *id)
 // {
@@ -376,76 +386,61 @@ static int rmserver_accept(struct rmserver_cb *cb)
 
 static void rmserver_setup_wr(struct rmserver_cb *cb)
 {
-	cb->recv_sgl.addr = (uint64_t) (unsigned long) &cb->recv_buf;
-	cb->recv_sgl.length = sizeof cb->recv_buf;
-	cb->recv_sgl.lkey = cb->recv_mr->lkey;
+	cb->recv_sgl.addr = (uint64_t) (unsigned long) &cb->mr_buffer;
+	cb->recv_sgl.length = CB_BUFFER_SIZE;
+	cb->recv_sgl.lkey = cb->mr_buffer->lkey;
 	cb->rq_wr.sg_list = &cb->recv_sgl;
 	cb->rq_wr.num_sge = 1;
-
-	cb->send_sgl.addr = (uint64_t) (unsigned long) &cb->send_buf;
-	cb->send_sgl.length = sizeof cb->send_buf;
-	cb->send_sgl.lkey = cb->send_mr->lkey;
-
-	cb->sq_wr.opcode = IBV_WR_SEND;
-	cb->sq_wr.send_flags = IBV_SEND_SIGNALED;
-	cb->sq_wr.sg_list = &cb->send_sgl;
-	cb->sq_wr.num_sge = 1;
-
-	cb->rdma_sgl.addr = (uint64_t) (unsigned long) cb->rdma_buf;
-	cb->rdma_sgl.lkey = cb->rdma_mr->lkey;
-	cb->rdma_sq_wr.send_flags = IBV_SEND_SIGNALED;
-	cb->rdma_sq_wr.sg_list = &cb->rdma_sgl;
-	cb->rdma_sq_wr.num_sge = 1;
 }
 
-static int rmserver_setup_buffers(struct rmserver_cb *cb)
-{
-	int ret;
+// static int rmserver_setup_buffers(struct rmserver_cb *cb)
+// {
+// 	int ret;
 
-	cb->recv_mr = ibv_reg_mr(cb->pd, &cb->recv_buf, sizeof cb->recv_buf,
-				 IBV_ACCESS_LOCAL_WRITE);
-	if (!cb->recv_mr) {
-		fprintf(stderr, "recv_buf reg_mr failed\n");
-		return errno;
-	}
+// 	cb->recv_mr = ibv_reg_mr(cb->pd, &cb->recv_buf, sizeof cb->recv_buf,
+// 				 IBV_ACCESS_LOCAL_WRITE);
+// 	if (!cb->recv_mr) {
+// 		fprintf(stderr, "recv_buf reg_mr failed\n");
+// 		return errno;
+// 	}
 
-	cb->send_mr = ibv_reg_mr(cb->pd, &cb->send_buf, sizeof cb->send_buf, 0);
-	if (!cb->send_mr) {
-		fprintf(stderr, "send_buf reg_mr failed\n");
-		ret = errno;
-		goto err1;
-	}
+// 	cb->send_mr = ibv_reg_mr(cb->pd, &cb->send_buf, sizeof cb->send_buf, 0);
+// 	if (!cb->send_mr) {
+// 		fprintf(stderr, "send_buf reg_mr failed\n");
+// 		ret = errno;
+// 		goto err1;
+// 	}
 
-	cb->rdma_buf = (char *)malloc(cb->size);
-	if (!cb->rdma_buf) {
-		fprintf(stderr, "rdma_buf malloc failed\n");
-		ret = -ENOMEM;
-		goto err2;
-	}
+// 	cb->rdma_buf = (char *)malloc(cb->size);
+// 	if (!cb->rdma_buf) {
+// 		fprintf(stderr, "rdma_buf malloc failed\n");
+// 		ret = -ENOMEM;
+// 		goto err2;
+// 	}
 
-	cb->rdma_mr = ibv_reg_mr(cb->pd, cb->rdma_buf, cb->size,
-				 IBV_ACCESS_LOCAL_WRITE |
-				 IBV_ACCESS_REMOTE_READ |
-				 IBV_ACCESS_REMOTE_WRITE);
-	if (!cb->rdma_mr) {
-		fprintf(stderr, "rdma_buf reg_mr failed\n");
-		ret = errno;
-		goto err3;
-	}
+// 	cb->rdma_mr = ibv_reg_mr(cb->pd, cb->rdma_buf, cb->size,
+// 				 IBV_ACCESS_LOCAL_WRITE |
+// 				 IBV_ACCESS_REMOTE_READ |
+// 				 IBV_ACCESS_REMOTE_WRITE);
+// 	if (!cb->rdma_mr) {
+// 		fprintf(stderr, "rdma_buf reg_mr failed\n");
+// 		ret = errno;
+// 		goto err3;
+// 	}
 
-	rmserver_setup_wr(cb);
-	return 0;
+// 	rmserver_setup_wr(cb);
+// 	return 0;
 
-err3:
-	free(cb->start_buf);
-	ibv_dereg_mr(cb->rdma_mr);
-	free(cb->rdma_buf);
-err2:
-	ibv_dereg_mr(cb->send_mr);
-err1:
-	ibv_dereg_mr(cb->recv_mr);
-	return ret;
-}
+// err3:
+// 	free(cb->start_buf);
+// 	ibv_dereg_mr(cb->rdma_mr);
+// 	free(cb->rdma_buf);
+// err2:
+// 	ibv_dereg_mr(cb->send_mr);
+// err1:
+// 	ibv_dereg_mr(cb->recv_mr);
+// 	return ret;
+// }
 
 // static void rmserver_free_buffers(struct rmserver_cb *cb)
 // {
@@ -455,29 +450,29 @@ err1:
 // 	free(cb->rdma_buf);
 // }
 
-static int rmserver_create_qp(struct rmserver_cb *cb)
-{
-	struct ibv_qp_init_attr init_attr;
-	struct rdma_cm_id *id;
-	int ret;
+// static int rmserver_create_qp(struct rmserver_cb *cb)
+// {
+// 	struct ibv_qp_init_attr init_attr;
+// 	struct rdma_cm_id *id;
+// 	int ret;
 
-	memset(&init_attr, 0, sizeof(init_attr));
-	init_attr.cap.max_send_wr = RMSERVER_SQ_DEPTH;
-	init_attr.cap.max_recv_wr = 2;
-	init_attr.cap.max_recv_sge = 1;
-	init_attr.cap.max_send_sge = 1;
-	init_attr.qp_type = IBV_QPT_RC;
-	init_attr.send_cq = cb->cq;
-	init_attr.recv_cq = cb->cq;
-	id = cb->child_cm_id;
+// 	memset(&init_attr, 0, sizeof(init_attr));
+// 	init_attr.cap.max_send_wr = RMSERVER_SQ_DEPTH;
+// 	init_attr.cap.max_recv_wr = 2;
+// 	init_attr.cap.max_recv_sge = 1;
+// 	init_attr.cap.max_send_sge = 1;
+// 	init_attr.qp_type = IBV_QPT_RC;
+// 	init_attr.send_cq = cb->cq;
+// 	init_attr.recv_cq = cb->cq;
+// 	id = cb->child_cm_id;
 
-	ret = rdma_create_qp(id, cb->pd, &init_attr);
-	if (!ret)
-		cb->qp = id->qp;
-	else
-		perror("rdma_create_qp");
-	return ret;
-}
+// 	ret = rdma_create_qp(id, cb->pd, &init_attr);
+// 	if (!ret)
+// 		cb->qp = id->qp;
+// 	else
+// 		perror("rdma_create_qp");
+// 	return ret;
+// }
 
 // static void rmserver_free_qp(struct rmserver_cb *cb)
 // {
@@ -487,51 +482,22 @@ static int rmserver_create_qp(struct rmserver_cb *cb)
 // 	ibv_dealloc_pd(cb->pd);
 // }
 
-static int rmserver_setup_qp(struct rmserver_cb *cb, struct rdma_cm_id *cm_id)
+static int rmserver_setup_qp(struct rmserver_cb *cb)
 {
-	int ret;
+	struct ibv_qp_init_attr qp_attr = {};
 
-	cb->pd = ibv_alloc_pd(cm_id->verbs);
-	if (!cb->pd) {
-		fprintf(stderr, "ibv_alloc_pd failed\n");
-		return errno;
-	}
+	qp_attr.send_cq = cb->cq;
+	qp_attr.recv_cq = cb->cq;
+	qp_attr.qp_type = IBV_QPT_RC;
+	qp_attr.cap.max_send_wr = 10;
+	qp_attr.cap.max_recv_wr = 10;
+	qp_attr.cap.max_send_sge = 1;
+	qp_attr.cap.max_recv_sge = 1;
 
-	cb->channel = ibv_create_comp_channel(cm_id->verbs);
-	if (!cb->channel) {
-		fprintf(stderr, "ibv_create_comp_channel failed\n");
-		ret = errno;
-		goto err1;
-	}
+	TEST_NZ(rdma_create_qp(cb->cm_id, cb->ctrl->dev->pd, &qp_attr));
+	cb->qp = cb->cm_id->qp;
 
-	cb->cq = ibv_create_cq(cm_id->verbs, RMSERVER_SQ_DEPTH * 2, cb,
-				cb->channel, 0);
-	if (!cb->cq) {
-		fprintf(stderr, "ibv_create_cq failed\n");
-		ret = errno;
-		goto err2;
-	}
-
-	ret = ibv_req_notify_cq(cb->cq, 0);
-	if (ret) {
-		fprintf(stderr, "ibv_create_cq failed\n");
-		ret = errno;
-		goto err3;
-	}
-
-	ret = rmserver_create_qp(cb);
-	if (ret) {
-		goto err3;
-	}
 	return 0;
-
-err3:
-	ibv_destroy_cq(cb->cq);
-err2:
-	ibv_destroy_comp_channel(cb->channel);
-err1:
-	ibv_dealloc_pd(cb->pd);
-	return ret;
 }
 
 // static void *cm_thread(void *arg)
@@ -586,7 +552,7 @@ static void *cq_thread(void *arg)
 
 static void rmserver_format_send(struct rmserver_cb *cb, char *buf, struct ibv_mr *mr, uint64_t roffset, enum request_type req)
 {
-	struct rmserver_rdma_info *info = &cb->send_buf;
+	struct rmserver_rdma_info *info = (struct rmserver_rdma_info *)cb->send_buffer;
 
 	info->buf = htobe64((uint64_t) (unsigned long) buf);
 	info->rkey = htobe32(mr->rkey);
@@ -597,9 +563,14 @@ static void rmserver_format_send(struct rmserver_cb *cb, char *buf, struct ibv_m
 
 void* rmserver_test_server(void *arg)
 {
-	struct ibv_send_wr *bad_wr;
+	struct ibv_ah *ah[256];
+	memset(ah, 0, 256 * sizeof(uintptr_t));
+
+	struct ibv_send_wr wr, *bad_wr;
+	struct ibv_sge sge;
 	int ret;
 	struct rmserver_cb *cb = (struct rmserver_cb *)arg;
+	uint64_t rdma_size = 0;
 
 	while (1) {
 		/* Wait for client's Start STAG/TO/Len */
@@ -613,91 +584,36 @@ void* rmserver_test_server(void *arg)
 
 		rmserver_format_send(cb, cb->start_buf, cb->start_mr, cb->remote_offset, cb->request_type);
 		if (cb->request_type == PAGE_FAULT) {
-			memcpy((void*)((uint64_t)&(cb->recv_buf.request_type) + sizeof(__be32)), (void*)((uint64_t)(far_memory) + cb->remote_offset), PAGE_SIZE);
+			memcpy((void*)((uint64_t)(cb->send_buffer) + sizeof(struct rmserver_rdma_info)), (void*)((uint64_t)(far_memory) + cb->remote_offset), PAGE_SIZE);
+			rdma_size = sizeof(struct rmserver_rdma_info) + PAGE_SIZE;
 		} else if (cb->request_type == PAGE_EVICT) {
-			memcpy((void*)(((uint64_t)far_memory) + cb->remote_offset), (void*)((uint64_t)&(cb->recv_buf.request_type) + sizeof(__be32)), PAGE_SIZE);
+			memcpy((void*)(((uint64_t)far_memory) + cb->remote_offset), (void*)((uint64_t)(cb->buffer) + sizeof(struct rmserver_rdma_info)), PAGE_SIZE);
+			rdma_size = sizeof(struct rmserver_rdma_info);
 		}
 
-		// /* Issue RDMA Read. */
-		// cb->rdma_sq_wr.opcode = IBV_WR_RDMA_READ;
-		// cb->rdma_sq_wr.wr.rdma.rkey = cb->remote_rkey;
-		// cb->rdma_sq_wr.wr.rdma.remote_addr = cb->remote_addr;
-		// cb->rdma_sq_wr.sg_list->length = cb->remote_len;
+		wr.opcode = IBV_WR_SEND;
+		wr.sg_list = &sge;
+		wr.num_sge = 1;
+		wr.send_flags = IBV_SEND_SIGNALED;
 
-		// ret = ibv_post_send(cb->qp, &cb->rdma_sq_wr, &bad_wr);
-		// if (ret) {
-		// 	fprintf(stderr, "post send error %d\n", ret);
-		// 	break;
-		// }
-		// DEBUG_LOG("server posted rdma read req \n");
+		sge.addr = (uint64_t) cb->send_buffer;
+		sge.length = rdma_size;
 
-		// /* Wait for read completion */
-		// sem_wait(&cb->sem);
-		// if (cb->state != RDMA_READ_COMPLETE) {
-		// 	fprintf(stderr, "wait for RDMA_READ_COMPLETE state %d\n",
-		// 		cb->state);
-		// 	ret = -1;
-		// 	break;
-		// }
-		// DEBUG_LOG("server received read complete\n");
-
-		// /* Display data in recv buf */
-		// if (cb->verbose)
-		// 	printf("server ping data: %s\n", cb->rdma_buf);
-
-		cb->req_state = RDMA_RESPONDED;
+		cb->req_state = RDMA_RESPONSE_STARTED;
 
 		/* Tell client to continue */
-		ret = ibv_post_send(cb->qp, &cb->sq_wr, &bad_wr);
+		ret = ibv_post_send(cb->qp, &wr, &bad_wr);
 		if (ret) {
 			fprintf(stderr, "post send error %d\n", ret);
 			break;
 		}
 
-		/* Wait for client's RDMA STAG/TO/Len */
-		// sem_wait(&cb->sem);
-		// if (cb->state != RDMA_RECEIVED) {
-		// 	fprintf(stderr, "wait for RDMA_WRITE_ADV state %d\n",
-		// 		cb->state);
-		// 	ret = -1;
-		// 	break;
-		// }
+		while (!(cb->req_state == RDMA_RESPONSE_SENT)) {
+			// Spin Wait
+		}
+
+		rmserver_setup_wr(cb);
 	}
-
-	// 	/* RDMA Write echo data */
-	// 	cb->rdma_sq_wr.opcode = IBV_WR_RDMA_WRITE;
-	// 	cb->rdma_sq_wr.wr.rdma.rkey = cb->remote_rkey;
-	// 	cb->rdma_sq_wr.wr.rdma.remote_addr = cb->remote_addr;
-	// 	cb->rdma_sq_wr.sg_list->length = strlen(cb->rdma_buf) + 1;
-	// 	DEBUG_LOG("rdma write from lkey %x laddr %" PRIx64 " len %d\n",
-	// 		  cb->rdma_sq_wr.sg_list->lkey,
-	// 		  cb->rdma_sq_wr.sg_list->addr,
-	// 		  cb->rdma_sq_wr.sg_list->length);
-
-	// 	ret = ibv_post_send(cb->qp, &cb->rdma_sq_wr, &bad_wr);
-	// 	if (ret) {
-	// 		fprintf(stderr, "post send error %d\n", ret);
-	// 		break;
-	// 	}
-
-	// 	/* Wait for completion */
-	// 	ret = sem_wait(&cb->sem);
-	// 	if (cb->state != RDMA_WRITE_COMPLETE) {
-	// 		fprintf(stderr, "wait for RDMA_WRITE_COMPLETE state %d\n",
-	// 			cb->state);
-	// 		ret = -1;
-	// 		break;
-	// 	}
-	// 	DEBUG_LOG("server rdma write complete \n");
-
-	// 	/* Tell client to begin again */
-	// 	ret = ibv_post_send(cb->qp, &cb->sq_wr, &bad_wr);
-	// 	if (ret) {
-	// 		fprintf(stderr, "post send error %d\n", ret);
-	// 		break;
-	// 	}
-	// 	DEBUG_LOG("server posted go ahead\n");
-	// }
 
 	return (cb->req_state == DISCONNECTED) ? 0 : 0;
 }
@@ -823,6 +739,7 @@ int main(int argc, char **argv)
 	struct rdma_event_channel *ec = NULL;
 	struct rdma_cm_id *listener = NULL;
 	uint16_t port = 0;
+	int ret = 0;
 
 	// memset(cb, 0, sizeof(*cb));
 	// cb->server = 1;
@@ -888,6 +805,22 @@ int main(int argc, char **argv)
 	}
 
 	printf("done connecting all queues\n");
+
+	for (unsigned int i = 0; i < NUM_QUEUES; ++i) {
+		printf("Starting test server: %d\n", i);
+		struct rmserver_cb *cb = &gctrl->cbs[i];
+		
+		ret = pthread_create(&cb->cqthread, NULL, cq_thread, cb);
+		if (ret) {
+			perror("pthread_create");
+		}
+
+		ret = pthread_create(&cb->test_thread, NULL, rmserver_test_server, cb);
+		if (ret) {
+			perror("pthread create");
+		}
+	}
+
 
 	// handle disconnects, etc.
 	while (rdma_get_cm_event(ec, &event) == 0) {
@@ -965,54 +898,56 @@ void die(const char *reason)
 
 int alloc_control()
 {
-  gctrl = (struct ctrl *) malloc(sizeof(struct ctrl));
-  TEST_Z(gctrl);
-  memset(gctrl, 0, sizeof(struct ctrl));
+	gctrl = (struct ctrl *) malloc(sizeof(struct ctrl));
+	TEST_Z(gctrl);
+	memset(gctrl, 0, sizeof(struct ctrl));
 
-  gctrl->cbs = (struct rmserver_cb *) malloc(sizeof(struct rmserver_cb) * NUM_QUEUES);
-  gctrl->queues = (struct queue *) malloc(sizeof(struct queue) * NUM_QUEUES);
-  TEST_Z(gctrl->cbs);
-  TEST_Z(gctrl->queues);
-  memset(gctrl->cbs, 0, sizeof(struct rmserver_cb) * NUM_QUEUES);
-  memset(gctrl->queues, 0, sizeof(struct queue) * NUM_QUEUES);
-  for (unsigned int i = 0; i < NUM_QUEUES; ++i) {
-    gctrl->queues[i].ctrl = gctrl;
-    gctrl->queues[i].state = queue::INIT;
-	gctrl->cbs[i].state = rmserver_cb::INIT;
-  }
-
-
-  return 0;
+	gctrl->cbs = (struct rmserver_cb *) malloc(sizeof(struct rmserver_cb) * NUM_QUEUES);
+	gctrl->queues = (struct queue *) malloc(sizeof(struct queue) * NUM_QUEUES);
+	TEST_Z(gctrl->cbs);
+	TEST_Z(gctrl->queues);
+	memset(gctrl->cbs, 0, sizeof(struct rmserver_cb) * NUM_QUEUES);
+	memset(gctrl->queues, 0, sizeof(struct queue) * NUM_QUEUES);
+	for (unsigned int i = 0; i < NUM_QUEUES; ++i) {
+		gctrl->queues[i].ctrl = gctrl;
+		gctrl->queues[i].state = queue::INIT;
+		gctrl->cbs[i].ctrl = gctrl;
+		gctrl->cbs[i].state = rmserver_cb::INIT;
+	}
+	return 0;
 }
 
-// static device *get_device(struct queue *q)
-// {
-//   struct device *dev = NULL;
+static device *get_device(struct rmserver_cb *cb)
+{
+	struct device *dev = NULL;
 
-//   if (!q->ctrl->dev) {
-//     dev = (struct device *) malloc(sizeof(*dev));
-//     TEST_Z(dev);
-//     dev->verbs = q->cm_id->verbs;
-//     TEST_Z(dev->verbs);
-//     dev->pd = ibv_alloc_pd(dev->verbs);
-//     TEST_Z(dev->pd);
+	if (!cb->ctrl->dev) {
+		dev = (struct device *) malloc(sizeof(*dev));
+		TEST_Z(dev);
+		dev->verbs = cb->cm_id->verbs;
+		TEST_Z(dev->verbs);
+		dev->pd = ibv_alloc_pd(dev->verbs);
+		TEST_Z(dev->pd);
+		cb->ctrl->dev = dev;
+	}
 
-//     struct ctrl *ctrl = q->ctrl;
-//     ctrl->buffer = malloc(BUFFER_SIZE);
-//     TEST_Z(ctrl->buffer);
+	cb->buffer = malloc(CB_BUFFER_SIZE);
+	TEST_Z(cb->buffer);
 
-//     TEST_Z(ctrl->mr_buffer = ibv_reg_mr(
-//       dev->pd,
-//       ctrl->buffer,
-//       BUFFER_SIZE,
-//       IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ));
+	TEST_Z(cb->mr_buffer = ibv_reg_mr(
+		dev->pd,
+		cb->buffer,
+		CB_BUFFER_SIZE,
+		IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ));
 
-//     printf("registered memory region of %zu bytes\n", BUFFER_SIZE);
-//     q->ctrl->dev = dev;
-//   }
+	TEST_Z(cb->mr_send_buffer = ibv_reg_mr(dev->pd, cb->send_buffer,
+										CB_BUFFER_SIZE, 0));
 
-//   return q->ctrl->dev;
-// }
+	printf("registered memory region of %zu bytes\n", CB_BUFFER_SIZE);
+	cb->ctrl->dev = dev;
+
+	return cb->ctrl->dev;
+}
 
 static void destroy_device(struct ctrl *ctrl)
 {
@@ -1043,10 +978,10 @@ static void destroy_device(struct ctrl *ctrl)
 
 int on_connect_request(struct rdma_cm_id *id, struct rdma_conn_param *param)
 {
+	struct rdma_conn_param cm_params = {};
+	struct ibv_device_attr attrs = {};
 	struct queue *q = &gctrl->queues[queue_ctr];
 	struct rmserver_cb *cb = &gctrl->cbs[queue_ctr++];
-	int ret = 0;
-	struct ibv_recv_wr *bad_wr;
 
 	TEST_Z(cb->state == rmserver_cb::INIT);
 	printf("%s\n", __FUNCTION__);
@@ -1054,59 +989,56 @@ int on_connect_request(struct rdma_cm_id *id, struct rdma_conn_param *param)
 	//id->context = q;
 	id->context = cb;
 	q->cm_id = id;
+	cb->cm_id = id;
 
-	//struct device *dev = get_device(q);
-	if (!(gctrl->cbs[0].rdma_buf)) {
-		rmserver_setup_buffers(&gctrl->cbs[0]);
-	}
-	rmserver_setup_qp(cb, id);
+	struct device *dev = get_device(cb);
+	// if (!(gctrl->cbs[0].rdma_buf)) {
+	// 	rmserver_setup_buffers(&gctrl->cbs[0]);
+	// }
+	int ret = rmserver_setup_qp(cb);
+	TEST_Z(ret);
 
-	ret = ibv_post_recv(cb->qp, &cb->rq_wr, &bad_wr);
-	if (ret) {
-		fprintf(stderr, "ibv_post_recv failed: %d\n", ret);
-	}
+	TEST_NZ(ibv_query_device(dev->verbs, &attrs));
 
-	ret = pthread_create(&cb->cqthread, NULL, cq_thread, cb);
-	if (ret) {
-		perror("pthread_create");
-	}
+	printf("attrs: max_qp=%d, max_qp_wr=%d, max_cq=%d max_cqe=%d \
+			max_qp_rd_atom=%d, max_qp_init_rd_atom=%d\n", attrs.max_qp,
+			attrs.max_qp_wr, attrs.max_cq, attrs.max_cqe,
+          	attrs.max_qp_rd_atom, attrs.max_qp_init_rd_atom);
 
-	ret = rmserver_accept(cb);
-	if (ret) {
-		fprintf(stderr, "connect error %d\n", ret);
-	}
+	printf("ctrl attrs: initiator_depth=%d responder_resources=%d\n",
+      		param->initiator_depth, param->responder_resources);
 
-	ret = pthread_create(&cb->test_thread, NULL, rmserver_test_server, cb);
-	if (ret) {
-		perror("pthread create");
-	}
+	cm_params.initiator_depth = param->initiator_depth;
 
-	//create_qp(q);
+	cm_params.responder_resources = param->responder_resources;
+  	cm_params.rnr_retry_count = param->rnr_retry_count;
+  	cm_params.flow_control = param->flow_control;
 
-  	// TEST_NZ(ibv_query_device(dev->verbs, &attrs));
+  	TEST_NZ(rdma_accept(q->cm_id, &cm_params));
 
-	// printf("attrs: max_qp=%d, max_qp_wr=%d, max_cq=%d max_cqe=%d
-	// 		max_qp_rd_atom=%d, max_qp_init_rd_atom=%d\n", attrs.max_qp,
-	// 		attrs.max_qp_wr, attrs.max_cq, attrs.max_cqe,
-	// 		attrs.max_qp_rd_atom, attrs.max_qp_init_rd_atom);
+  	return 0;
 
-	// printf("ctrl attrs: initiator_depth=%d responder_resources=%d\n",
-	// 	param->initiator_depth, param->responder_resources);
+	// ret = ibv_post_recv(cb->qp, &cb->rq_wr, &bad_wr);
+	// if (ret) {
+	// 	fprintf(stderr, "ibv_post_recv failed: %d\n", ret);
+	// }
 
-	// // the following should hold for initiator_depth:
-	// // initiator_depth <= max_qp_init_rd_atom, and
-	// // initiator_depth <= param->initiator_depth
-	// cm_params.initiator_depth = param->initiator_depth;
-	// // the following should hold for responder_resources:
-	// // responder_resources <= max_qp_rd_atom, and
-	// // responder_resources >= param->responder_resources
-	// cm_params.responder_resources = param->responder_resources;
-	// cm_params.rnr_retry_count = param->rnr_retry_count;
-	// cm_params.flow_control = param->flow_control;
+	// ret = pthread_create(&cb->cqthread, NULL, cq_thread, cb);
+	// if (ret) {
+	// 	perror("pthread_create");
+	// }
 
-	// TEST_NZ(rdma_accept(q->cm_id, &cm_params));
+	// ret = rmserver_accept(cb);
+	// if (ret) {
+	// 	fprintf(stderr, "connect error %d\n", ret);
+	// }
 
-	return 0;
+	// ret = pthread_create(&cb->test_thread, NULL, rmserver_test_server, cb);
+	// if (ret) {
+	// 	perror("pthread create");
+	// }
+
+	// return 0;
 }
 
 int on_connection(struct rmserver_cb *cb)
@@ -1142,7 +1074,10 @@ int on_connection(struct rmserver_cb *cb)
 //   }
 
 	// q->state = queue::CONNECTED;
+
+	rmserver_setup_wr(cb);
 	cb->state = rmserver_cb::CONNECTED;
+
 	return 0;
 }
 
