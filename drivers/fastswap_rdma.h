@@ -146,6 +146,8 @@ struct sswap_cb {
 					/* listener on server side. */
 	struct rdma_cm_id *child_cm_id;	/* connection on server side */
 	struct list_head list;
+	int cm_error;
+	struct completion cm_done;
 };
 
 struct sswap_rdma_ctrl;
