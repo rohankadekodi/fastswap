@@ -800,8 +800,6 @@ int main(int argc, char **argv)
 			if (on_event(&event_copy) || cb->state == rmserver_cb::CONNECTED)
 				break;
 		}
-
-		printf("Something went wrong in rdma_get_cm_event()\n");
 	}
 
 	printf("done connecting all queues\n");
@@ -934,14 +932,15 @@ static device *get_device(struct rmserver_cb *cb)
 	cb->buffer = malloc(CB_BUFFER_SIZE);
 	cb->send_buffer = malloc(CB_BUFFER_SIZE);
 	TEST_Z(cb->buffer);
+	TEST_Z(cb->send_buffer);
 
 	TEST_Z(cb->mr_buffer = ibv_reg_mr(
-		dev->pd,
+		cb->ctrl->dev->pd,
 		cb->buffer,
 		CB_BUFFER_SIZE,
 		IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ));
 
-	TEST_Z(cb->mr_send_buffer = ibv_reg_mr(dev->pd, cb->send_buffer,
+	TEST_Z(cb->mr_send_buffer = ibv_reg_mr(cb->ctrl->dev->pd, cb->send_buffer,
 										CB_BUFFER_SIZE, 0));
 
 	printf("registered memory region of %zu bytes\n", CB_BUFFER_SIZE);
@@ -991,6 +990,8 @@ int on_connect_request(struct rdma_cm_id *id, struct rdma_conn_param *param)
 	cb->cm_id = id;
 
 	struct device *dev = get_device(cb);
+	printf("%s: get_device() returned %p\n", __FUNCTION__, dev);
+
 	// if (!(gctrl->cbs[0].rdma_buf)) {
 	// 	rmserver_setup_buffers(&gctrl->cbs[0]);
 	// }
@@ -1014,7 +1015,7 @@ int on_connect_request(struct rdma_cm_id *id, struct rdma_conn_param *param)
   	cm_params.rnr_retry_count = param->rnr_retry_count;
   	cm_params.flow_control = param->flow_control;
 
-  	TEST_NZ(rdma_accept(q->cm_id, &cm_params));
+  	TEST_NZ(rdma_accept(cb->cm_id, &cm_params));
 
   	return 0;
 
@@ -1076,6 +1077,7 @@ int on_connection(struct rmserver_cb *cb)
 	// q->state = queue::CONNECTED;
 
 	rmserver_setup_wr(cb);
+	printf("Connection successful\n");
 	cb->state = rmserver_cb::CONNECTED;
 
 	return 0;
