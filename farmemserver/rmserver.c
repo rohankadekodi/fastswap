@@ -17,7 +17,7 @@
 
 const size_t BUFFER_SIZE = 1024 * 1024 * 1024 * 32l;
 const size_t CB_BUFFER_SIZE = 1024 * 1024 * 4l;
-const unsigned int NUM_PROCS = 48;
+const unsigned int NUM_PROCS = 4;
 const unsigned int NUM_QUEUES_PER_PROC = 3;
 const unsigned int NUM_QUEUES = NUM_PROCS * NUM_QUEUES_PER_PROC;
 const size_t PAGE_SIZE = 4096;
@@ -932,6 +932,7 @@ static device *get_device(struct rmserver_cb *cb)
 	}
 
 	cb->buffer = malloc(CB_BUFFER_SIZE);
+	cb->send_buffer = malloc(CB_BUFFER_SIZE);
 	TEST_Z(cb->buffer);
 
 	TEST_Z(cb->mr_buffer = ibv_reg_mr(
