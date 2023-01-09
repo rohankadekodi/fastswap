@@ -116,10 +116,15 @@ static int sswap_setup_buffers(struct sswap_cb *cb, struct sswap_rdma_dev *rdev)
 					      sizeof(cb->recv_buf), DMA_BIDIRECTIONAL);
 	dma_unmap_addr_set(cb, recv_mapping, cb->recv_dma_addr);
 
-	cb->send_dma_addr = ib_dma_map_single(rdev->pd->device,
-					      &cb->send_buf, sizeof(cb->send_buf),
+	cb->send_pf_dma_addr = ib_dma_map_single(rdev->pd->device,
+					      &cb->send_pf_buf, sizeof(cb->send_pf_buf),
 					      DMA_BIDIRECTIONAL);
-	dma_unmap_addr_set(cb, send_mapping, cb->send_dma_addr);
+	dma_unmap_addr_set(cb, send_pf_mapping, cb->send_pf_dma_addr);
+
+	cb->send_evict_dma_addr = ib_dma_map_single(rdev->pd->device,
+					      &cb->send_evict_buf, sizeof(cb->send_evict_buf),
+					      DMA_BIDIRECTIONAL);
+	dma_unmap_addr_set(cb, send_evict_mapping, cb->send_evict_dma_addr);
 
 	cb->rdma_buf = ib_dma_alloc_coherent(rdev->pd->device, cb->size,
 					     &cb->rdma_dma_addr,
@@ -640,7 +645,7 @@ static u32 sswap_rdma_rkey(struct sswap_cb *cb, u64 buf, int post_inv)
 
 static void sswap_page_fault_format_send(struct sswap_cb *cb, u64 buf, u64 roffset)
 {
-	struct sswap_rdma_info *info = &cb->send_buf;
+	struct sswap_pf_rdma_info *info = &cb->send_pf_buf;
 	u32 rkey;
 
 	rkey = sswap_rdma_rkey(cb, buf, !cb->server_invalidate);
@@ -653,7 +658,7 @@ static void sswap_page_fault_format_send(struct sswap_cb *cb, u64 buf, u64 roffs
 
 static void sswap_page_evict_format_send(struct sswap_cb *cb, u64 buf, u64 roffset, struct page *page)
 {
-	struct sswap_rdma_info *info = &cb->send_buf;
+	struct sswap_evict_rdma_info *info = &cb->send_evict_buf;
 	u32 rkey;
 
 	rkey = sswap_rdma_rkey(cb, buf, !cb->server_invalidate);
@@ -662,7 +667,7 @@ static void sswap_page_evict_format_send(struct sswap_cb *cb, u64 buf, u64 roffs
 	info->size = htonl(cb->size);
   	info->remote_offset = htonll(roffset);
   	info->request_type = htonl(PAGE_EVICT);
-  	memcpy((void*)((u64)(info->request_type) + sizeof(struct sswap_rdma_info)), page_address(page), PAGE_SIZE);
+  	memcpy((void*)(info->page_content), page_address(page), PAGE_SIZE);
 }
 
 inline struct sswap_cb *sswap_rdma_get_cb(unsigned int cpuid,
@@ -747,6 +752,24 @@ static void sswap_setup_wr(struct sswap_cb *cb)
 	cb->sq_wr.sg_list = &cb->send_sgl;
 	cb->sq_wr.num_sge = 1;
 
+	cb->send_pf_sgl.addr = cb->send_pf_dma_addr;
+	cb->send_pf_sgl.length = sizeof cb->send_pf_buf;
+  	cb->send_pf_sgl.lkey = cb->pd->local_dma_lkey;
+
+	cb->sq_pf_wr.opcode = IB_WR_SEND;
+	cb->sq_pf_wr.send_flags = IB_SEND_SIGNALED;
+	cb->sq_pf_wr.sg_list = &cb->send_pf_sgl;
+	cb->sq_pf_wr.num_sge = 1;
+
+	cb->send_evict_sgl.addr = cb->send_evict_dma_addr;
+	cb->send_evict_sgl.length = sizeof cb->send_evict_buf;
+  	cb->send_evict_sgl.lkey = cb->pd->local_dma_lkey;
+
+	cb->sq_evict_wr.opcode = IB_WR_SEND;
+	cb->sq_evict_wr.send_flags = IB_SEND_SIGNALED;
+	cb->sq_evict_wr.sg_list = &cb->send_evict_sgl;
+	cb->sq_evict_wr.num_sge = 1;
+
 	cb->rdma_sgl.addr = cb->rdma_dma_addr;
 	cb->rdma_sq_wr.wr.send_flags = IB_SEND_SIGNALED;
 	cb->rdma_sq_wr.wr.sg_list = &cb->rdma_sgl;
@@ -788,6 +811,12 @@ static void sswap_free_buffers(struct sswap_cb *cb)
 	dma_unmap_single(cb->pd->device->dma_device,
 			 dma_unmap_addr(cb, send_mapping),
 			 sizeof(cb->send_buf), DMA_BIDIRECTIONAL);
+	dma_unmap_single(cb->pd->device->dma_device,
+			 dma_unmap_addr(cb, send_pf_mapping),
+			 sizeof(cb->send_pf_buf), DMA_BIDIRECTIONAL);
+	dma_unmap_single(cb->pd->device->dma_device,
+			 dma_unmap_addr(cb, send_evict_mapping),
+			 sizeof(cb->send_evict_buf), DMA_BIDIRECTIONAL);
 
 	ib_dma_free_coherent(cb->pd->device, cb->size, cb->rdma_buf,
 			     cb->rdma_dma_addr);
@@ -1312,6 +1341,7 @@ int sswap_new_rdma_write(struct page *page, u64 roffset)
 
 	cb = sswap_rdma_get_cb(smp_processor_id() % numprocs, QP_WRITE_SYNC);
 	BUG_ON(cb == NULL);
+	pr_info("%s: got cb = %p\n", __FUNCTION__, cb);
 
 	cb->state = RDMA_READ_ADV;
 
@@ -1320,12 +1350,14 @@ int sswap_new_rdma_write(struct page *page, u64 roffset)
 		pr_info("sswap_page_fault_format_send() failed\n");
 		return cb->state;
 	}
+	pr_info("%s: page_evict_format_send() is set\n", __FUNCTION__);
 
 	ret = ib_post_send(cb->qp, &cb->sq_wr, &bad_wr);
 	if (ret) {
 		pr_info("post send error %d\n", ret);
 		return ret;
 	}
+	pr_info("%s: ib_post_send() is done\n", __FUNCTION__);
 
 	// Spin wait for send completion
 	while ((ret = ib_poll_cq(cb->cq, 1, &wc) == 0));
@@ -1342,6 +1374,8 @@ int sswap_new_rdma_write(struct page *page, u64 roffset)
 	while (cb->state != RDMA_RECEIVED) {
 		sswap_cq_event_handler(cb->cq, cb);
 	}
+
+	pr_info("Received RDMA meaning that the remote server has reflected the eviction\n");
 
 	return 0;
 }
@@ -1585,8 +1619,8 @@ static int __init sswap_rdma_init_module(void)
   pr_info("start: %s\n", __FUNCTION__);
   pr_info("* RDMA BACKEND *\n");
 
-  numcpus = num_online_cpus() % numprocs;
-  numqueues = numprocs * 3;
+  numcpus = numprocs;
+  numqueues = numcpus * 3;
 
   pr_info("** NUM QUEUES = %d **\n", numqueues);
   req_cache = kmem_cache_create("sswap_req_cache", sizeof(struct rdma_req), 0,

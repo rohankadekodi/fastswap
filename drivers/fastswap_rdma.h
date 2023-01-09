@@ -71,6 +71,23 @@ struct sswap_rdma_info {
 	enum request_type request_type;
 };
 
+struct sswap_pf_rdma_info {
+	uint64_t buf;
+	uint32_t rkey;
+	uint32_t size;
+	uint64_t remote_offset;
+	enum request_type request_type;
+};
+
+struct sswap_evict_rdma_info {
+	uint64_t buf;
+	uint32_t rkey;
+	uint32_t size;
+	uint64_t remote_offset;
+	enum request_type request_type;
+	uint8_t page_content[4096];
+};
+
 /*
  * Control block struct.
  */
@@ -93,15 +110,25 @@ struct sswap_cb {
 
 	struct ib_recv_wr rq_wr;	/* recv work request record */
 	struct ib_sge recv_sgl;		/* recv single SGE */
-	struct sswap_rdma_info recv_buf __aligned(16);	/* malloc'd buffer */
+	struct sswap_evict_rdma_info recv_buf __aligned(16);	/* malloc'd buffer */
 	u64 recv_dma_addr;
 	DEFINE_DMA_UNMAP_ADDR(recv_mapping);
 
 	struct ib_send_wr sq_wr;	/* send work requrest record */
 	struct ib_sge send_sgl;
+	struct ib_send_wr sq_pf_wr;	/* send work requrest record */
+	struct ib_sge send_pf_sgl;
+	struct ib_send_wr sq_evict_wr;	/* send work requrest record */
+	struct ib_sge send_evict_sgl;
 	struct sswap_rdma_info send_buf __aligned(16); /* single send buf */
+	struct sswap_pf_rdma_info send_pf_buf __aligned(16); /* single send buf */
+	struct sswap_evict_rdma_info send_evict_buf __aligned(16); /* single send buf */
 	u64 send_dma_addr;
+	u64 send_pf_dma_addr;
+	u64 send_evict_dma_addr;
 	DEFINE_DMA_UNMAP_ADDR(send_mapping);
+	DEFINE_DMA_UNMAP_ADDR(send_pf_mapping);
+	DEFINE_DMA_UNMAP_ADDR(send_evict_mapping);
 
 	struct ib_rdma_wr rdma_sq_wr;	/* rdma work request record */
 	struct ib_sge rdma_sgl;		/* rdma single SGE */
