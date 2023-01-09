@@ -168,52 +168,53 @@ static int sswap_setup_buffers(struct sswap_cb *cb, struct sswap_rdma_dev *rdev)
 
 static struct sswap_rdma_dev *sswap_rdma_get_device(struct sswap_cb *cb)
 {
-  struct sswap_rdma_dev *rdev = NULL;
-  int ret = 0;
+	struct sswap_rdma_dev *rdev = NULL;
+	int ret = 0;
 
-  if (!gctrl->rdev) {
-    rdev = kzalloc(sizeof(*rdev), GFP_KERNEL);
-    if (!rdev) {
-      pr_err("no memory\n");
-      goto out_err;
-    }
+	if (!gctrl->rdev) {
+		rdev = kzalloc(sizeof(*rdev), GFP_KERNEL);
+		if (!rdev) {
+			pr_err("no memory\n");
+			goto out_err;
+		}
 
-    rdev->dev = cb->cm_id->device;
+		rdev->dev = cb->cm_id->device;
 
-    pr_info("selecting device %s\n", rdev->dev->name);
+		pr_info("selecting device %s\n", rdev->dev->name);
 
-    rdev->pd = ib_alloc_pd(rdev->dev, 0);
-    if (IS_ERR(rdev->pd)) {
-      pr_err("ib_alloc_pd\n");
-      goto out_free_dev;
-    }
-	pr_info("rdev->pd after ib_alloc_pd = %p\n", rdev->pd);
+		rdev->pd = ib_alloc_pd(rdev->dev, 0);
+		if (IS_ERR(rdev->pd)) {
+			pr_err("ib_alloc_pd\n");
+			goto out_free_dev;
+		}
+		pr_info("rdev->pd after ib_alloc_pd = %p\n", rdev->pd);
 
-    if (!(rdev->dev->attrs.device_cap_flags &
-          IB_DEVICE_MEM_MGT_EXTENSIONS)) {
-      pr_err("memory registrations not supported\n");
-      goto out_free_pd;
-    }
-	pr_info("Memory registrations are supported\n");
-	cb->pd = rdev->pd;
+		if (!(rdev->dev->attrs.device_cap_flags &
+			IB_DEVICE_MEM_MGT_EXTENSIONS)) {
+			pr_err("memory registrations not supported\n");
+			goto out_free_pd;
+		}
+		pr_info("Memory registrations are supported\n");
 
-    ret = sswap_setup_buffers(cb, rdev);
-    if (ret) {
-      pr_info("sswap_setup_buffers() failed with ret value %d\n", ret);
-    }
+		gctrl->rdev = rdev;
+	}
+
+	cb->pd = gctrl->rdev->pd;
+
+	ret = sswap_setup_buffers(cb, gctrl->rdev);
+	if (ret) {
+		pr_info("sswap_setup_buffers() failed with ret value %d\n", ret);
+	}
 	pr_info("sswap_setup_buffers() returned %d\n", ret);
 
-    gctrl->rdev = rdev;
-  }
-
-  return gctrl->rdev;
+	return gctrl->rdev;
 
 out_free_pd:
-  ib_dealloc_pd(rdev->pd);
+	ib_dealloc_pd(gctrl->rdev->pd);
 out_free_dev:
-  kfree(rdev);
+	kfree(gctrl->rdev);
 out_err:
-  return NULL;
+	return NULL;
 }
 
 static int sswap_create_qp(struct sswap_cb *cb)
@@ -739,7 +740,7 @@ static void sswap_setup_wr(struct sswap_cb *cb)
 
 	cb->send_sgl.addr = cb->send_dma_addr;
 	cb->send_sgl.length = sizeof cb->send_buf;
-  cb->send_sgl.lkey = cb->pd->local_dma_lkey;
+  	cb->send_sgl.lkey = cb->pd->local_dma_lkey;
 
 	cb->sq_wr.opcode = IB_WR_SEND;
 	cb->sq_wr.send_flags = IB_SEND_SIGNALED;
@@ -888,8 +889,16 @@ static int sswap_rdma_init_queue(struct sswap_rdma_ctrl *ctrl,
 	}
 
 	sswap_run_client(cb);
+	pr_info("sswap_run_client() done\n");
 
 	sswap_setup_wr(cb);
+	pr_info("sswap_setup_wr() done.\n");
+
+	if (cb->qp == NULL) {
+		pr_info("qp is NULL\n");
+	}	
+	pr_info("Calling ib_post_recv() with qp = %p, rq_wr = %p\n", cb->qp, &(cb->rq_wr));
+
 	ret = ib_post_recv(cb->qp, &cb->rq_wr, &bad_wr);
 	if (ret) {
 		pr_info("ib_post_recv() failed\n");

@@ -485,6 +485,31 @@ static void rmserver_setup_wr(struct rmserver_cb *cb)
 static int rmserver_setup_qp(struct rmserver_cb *cb)
 {
 	struct ibv_qp_init_attr qp_attr = {};
+	int ret = 0;
+
+	cb->channel = ibv_create_comp_channel(cb->cm_id->verbs);
+	if (!cb->channel) {
+		fprintf(stderr, "ibv_create_comp_channel failed\n");
+		ret = errno;
+		return ret;
+	}
+	printf("created channel %p\n", cb->channel);
+
+	cb->cq = ibv_create_cq(cb->cm_id->verbs, 10 * 2, cb,
+					cb->channel, 0);
+	if (!cb->cq) {
+		fprintf(stderr, "ibv_create_cq failed\n");
+		ret = errno;
+		goto err2;
+	}
+	printf("created cq %p\n", cb->cq);
+
+	ret = ibv_req_notify_cq(cb->cq, 0);
+	if (ret) {
+		fprintf(stderr, "ibv_create_cq failed\n");
+		ret = errno;
+		goto err3;
+	}
 
 	qp_attr.send_cq = cb->cq;
 	qp_attr.recv_cq = cb->cq;
@@ -498,6 +523,12 @@ static int rmserver_setup_qp(struct rmserver_cb *cb)
 	cb->qp = cb->cm_id->qp;
 
 	return 0;
+
+err3:
+	ibv_destroy_cq(cb->cq);
+err2:
+	ibv_destroy_comp_channel(cb->channel);
+	return ret;
 }
 
 // static void *cm_thread(void *arg)
