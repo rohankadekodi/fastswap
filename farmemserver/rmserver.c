@@ -613,11 +613,15 @@ void* rmserver_test_server(void *arg)
 			break;
 		}
 
+		printf("RDMA has been received\n");
+
 		rmserver_format_send(cb, cb->start_buf, cb->start_mr, cb->remote_offset, cb->request_type);
 		if (cb->request_type == PAGE_FAULT) {
+			printf("Received page fault\n");
 			memcpy((void*)((uint64_t)(cb->send_buffer) + sizeof(struct rmserver_rdma_info)), (void*)((uint64_t)(far_memory) + cb->remote_offset), PAGE_SIZE);
 			rdma_size = sizeof(struct rmserver_rdma_info) + PAGE_SIZE;
 		} else if (cb->request_type == PAGE_EVICT) {
+			printf("Received page eviction\n");
 			memcpy((void*)(((uint64_t)far_memory) + cb->remote_offset), (void*)((uint64_t)(cb->buffer) + sizeof(struct rmserver_rdma_info)), PAGE_SIZE);
 			rdma_size = sizeof(struct rmserver_rdma_info);
 		}

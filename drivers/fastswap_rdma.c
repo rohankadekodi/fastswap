@@ -115,6 +115,7 @@ static int sswap_setup_buffers(struct sswap_cb *cb, struct sswap_rdma_dev *rdev)
 					      &cb->recv_buf,
 					      sizeof(cb->recv_buf), DMA_BIDIRECTIONAL);
 	dma_unmap_addr_set(cb, recv_mapping, cb->recv_dma_addr);
+
 	cb->send_dma_addr = ib_dma_map_single(rdev->pd->device,
 					      &cb->send_buf, sizeof(cb->send_buf),
 					      DMA_BIDIRECTIONAL);
@@ -123,11 +124,8 @@ static int sswap_setup_buffers(struct sswap_cb *cb, struct sswap_rdma_dev *rdev)
 	cb->rdma_buf = ib_dma_alloc_coherent(rdev->pd->device, cb->size,
 					     &cb->rdma_dma_addr,
 					     GFP_KERNEL);
-	if (!cb->rdma_buf) {
-		ret = -ENOMEM;
-		goto bail;
-	}
 	dma_unmap_addr_set(cb, rdma_mapping, cb->rdma_dma_addr);
+
 	cb->page_list_len = (((cb->size - 1) & PAGE_MASK) + PAGE_SIZE)
 		>> PAGE_SHIFT;
 	cb->reg_mr = ib_alloc_mr(rdev->pd,  IB_MR_TYPE_MEM_REG,
@@ -140,10 +138,6 @@ static int sswap_setup_buffers(struct sswap_cb *cb, struct sswap_rdma_dev *rdev)
 	cb->start_buf = ib_dma_alloc_coherent(rdev->pd->device, cb->size,
 					      &cb->start_dma_addr,
 					      GFP_KERNEL);
-	if (!cb->start_buf) {
-		ret = -ENOMEM;
-		goto bail;
-	}
 	dma_unmap_addr_set(cb, start_mapping, cb->start_dma_addr);
 
 	return 0;
@@ -533,10 +527,13 @@ static int sswap_bind_client(struct sswap_cb *cb)
 
 static int client_recv(struct sswap_cb *cb, struct ib_wc *wc)
 {
-	if (wc->byte_len != sizeof(cb->recv_buf)) {
+	pr_info("Client received data.\n");
+	if (wc->byte_len < sizeof(cb->recv_buf)) {
 		pr_info("Received bogus data, size %d\n", wc->byte_len);
 		return -1;
 	}
+
+	pr_info("client_recv() remote_offset = %llu\n", ntohll(cb->recv_buf.remote_offset));
 
 	cb->state = RDMA_RECEIVED;
 
@@ -665,7 +662,7 @@ static void sswap_page_evict_format_send(struct sswap_cb *cb, u64 buf, u64 roffs
 	info->size = htonl(cb->size);
   	info->remote_offset = htonll(roffset);
   	info->request_type = htonl(PAGE_EVICT);
-  	memcpy((void*)&(info->request_type) + sizeof(uint32_t), page_address(page), PAGE_SIZE);
+  	memcpy((void*)((u64)(info->request_type) + sizeof(struct sswap_rdma_info)), page_address(page), PAGE_SIZE);
 }
 
 inline struct sswap_cb *sswap_rdma_get_cb(unsigned int cpuid,
@@ -685,7 +682,7 @@ inline struct sswap_cb *sswap_rdma_get_cb(unsigned int cpuid,
   };
 }
 
-static void sswap_new_rdma_read_sync(struct page *page, u64 roffset)
+int sswap_new_rdma_read_sync(struct page *page, u64 roffset)
 {
 	struct ib_send_wr *bad_wr;
 	struct ib_wc wc;
@@ -698,25 +695,25 @@ static void sswap_new_rdma_read_sync(struct page *page, u64 roffset)
 	sswap_page_fault_format_send(cb, cb->start_dma_addr, roffset);
 	if (cb->state == ERROR) {
 		pr_info("sswap_page_fault_format_send() failed\n");
-		return;
+		return cb->state;
 	}
 
 	ret = ib_post_send(cb->qp, &cb->sq_wr, &bad_wr);
 	if (ret) {
 		pr_info("post send error %d\n", ret);
-		return;
+		return ret;
 	}
 
 	// Spin wait for send completion
 	while ((ret = ib_poll_cq(cb->cq, 1, &wc) == 0));
 	if (ret < 0) {
 		pr_info("poll error %d\n", ret);
-		return;
+		return ret;
 	}
 
 	if (wc.status) {
 		pr_info("send completion error %d\n", wc.status);
-		return;
+		return wc.status;
 	}
 
 	while (cb->state != RDMA_RECEIVED) {
@@ -725,10 +722,13 @@ static void sswap_new_rdma_read_sync(struct page *page, u64 roffset)
 	
 
 	// Actually write to the page
-	memcpy((void*)page_address(page), (void*)cb->recv_dma_addr, PAGE_SIZE);
+	memcpy((void*)page_address(page), (void*)((u64)(&(cb->recv_buf)) + sizeof(struct sswap_rdma_info)), PAGE_SIZE);
 	SetPageUptodate(page);
 	unlock_page(page);
+
+	return 0;
 }
+EXPORT_SYMBOL(sswap_new_rdma_read_sync);
 
 static void sswap_setup_wr(struct sswap_cb *cb)
 {
@@ -1303,7 +1303,7 @@ static inline int begin_read(struct rdma_queue *q, struct page *page,
   return ret;
 }
 
-static void sswap_new_rdma_write(struct page *page, u64 roffset)
+int sswap_new_rdma_write(struct page *page, u64 roffset)
 {
 	struct ib_send_wr *bad_wr;
 	struct ib_wc wc;
@@ -1318,36 +1318,34 @@ static void sswap_new_rdma_write(struct page *page, u64 roffset)
 	sswap_page_evict_format_send(cb, cb->start_dma_addr, roffset, page);
 	if (cb->state == ERROR) {
 		pr_info("sswap_page_fault_format_send() failed\n");
-		return;
+		return cb->state;
 	}
 
 	ret = ib_post_send(cb->qp, &cb->sq_wr, &bad_wr);
 	if (ret) {
 		pr_info("post send error %d\n", ret);
-		return;
+		return ret;
 	}
 
 	// Spin wait for send completion
 	while ((ret = ib_poll_cq(cb->cq, 1, &wc) == 0));
 	if (ret < 0) {
 		pr_info("poll error %d\n", ret);
-		return;
+		return ret;
 	}
 
 	if (wc.status) {
 		pr_info("send completion error %d\n", wc.status);
-		return;
+		return wc.status;
 	}
 
-	while (cb->state < RDMA_WRITE_ADV) {
+	while (cb->state != RDMA_RECEIVED) {
 		sswap_cq_event_handler(cb->cq, cb);
 	}
 
-	// Actually write to the page
-	memcpy((void*)page_address(page), (void*)cb->recv_dma_addr, PAGE_SIZE);
-	SetPageUptodate(page);
-	unlock_page(page);
+	return 0;
 }
+EXPORT_SYMBOL(sswap_new_rdma_write);
 
 int sswap_rdma_write(struct page *page, u64 roffset)
 {

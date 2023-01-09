@@ -195,7 +195,9 @@ struct rdma_queue *sswap_rdma_get_queue(unsigned int idx, enum qp_type type);
 enum qp_type get_queue_type(unsigned int idx);
 int sswap_rdma_read_async(struct page *page, u64 roffset);
 int sswap_rdma_read_sync(struct page *page, u64 roffset);
+int sswap_new_rdma_read_sync(struct page *page, u64 roffset);
 int sswap_rdma_write(struct page *page, u64 roffset);
+int sswap_new_rdma_write(struct page *page, u64 roffset);
 int sswap_rdma_poll_load(int cpu);
 
 enum timing_category {

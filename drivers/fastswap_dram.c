@@ -20,6 +20,13 @@ int sswap_rdma_write(struct page *page, u64 roffset)
 }
 EXPORT_SYMBOL(sswap_rdma_write);
 
+int sswap_new_rdma_write(struct page *page, u64 roffset)
+{
+	sswap_rdma_write(page, roffset);
+	return 0;
+}
+EXPORT_SYMBOL(sswap_new_rdma_write);
+
 int sswap_rdma_poll_load(int cpu)
 {
 	return 0;
@@ -43,6 +50,12 @@ int sswap_rdma_read_async(struct page *page, u64 roffset)
 	return 0;
 }
 EXPORT_SYMBOL(sswap_rdma_read_async);
+
+int sswap_new_rdma_read_sync(struct page *page, u64 roffset)
+{
+	return sswap_rdma_read_async(page, roffset);
+}
+EXPORT_SYMBOL(sswap_new_rdma_read_sync);
 
 int sswap_rdma_read_sync(struct page *page, u64 roffset)
 {
