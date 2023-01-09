@@ -945,8 +945,6 @@ static device *get_device(struct rmserver_cb *cb)
 										CB_BUFFER_SIZE, 0));
 
 	printf("registered memory region of %zu bytes\n", CB_BUFFER_SIZE);
-	cb->ctrl->dev = dev;
-
 	return cb->ctrl->dev;
 }
 
@@ -997,7 +995,8 @@ int on_connect_request(struct rdma_cm_id *id, struct rdma_conn_param *param)
 	// 	rmserver_setup_buffers(&gctrl->cbs[0]);
 	// }
 	int ret = rmserver_setup_qp(cb);
-	TEST_Z(ret);
+	TEST_NZ(ret);
+	printf("rmserver_setup_qp() returned %d\n", ret);
 
 	TEST_NZ(ibv_query_device(dev->verbs, &attrs));
 
