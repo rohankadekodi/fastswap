@@ -646,9 +646,9 @@ static u32 sswap_rdma_rkey(struct sswap_cb *cb, u64 buf, int post_inv)
 static void sswap_page_fault_format_send(struct sswap_cb *cb, u64 buf, u64 roffset)
 {
 	struct sswap_pf_rdma_info *info = &cb->send_pf_buf;
-	u32 rkey;
+	u32 rkey = 0;
 
-	rkey = sswap_rdma_rkey(cb, buf, !cb->server_invalidate);
+	// rkey = sswap_rdma_rkey(cb, buf, !cb->server_invalidate);
 	info->buf = htonll(buf);
 	info->rkey = htonl(rkey);
 	info->size = htonl(cb->size);
@@ -659,15 +659,18 @@ static void sswap_page_fault_format_send(struct sswap_cb *cb, u64 buf, u64 roffs
 static void sswap_page_evict_format_send(struct sswap_cb *cb, u64 buf, u64 roffset, struct page *page)
 {
 	struct sswap_evict_rdma_info *info = &cb->send_evict_buf;
-	u32 rkey;
+	u32 rkey = 0;
 
-	rkey = sswap_rdma_rkey(cb, buf, !cb->server_invalidate);
+	pr_info("setting rdma rkey\n");
+	// rkey = sswap_rdma_rkey(cb, buf, !cb->server_invalidate);
 	info->buf = htonll(buf);
 	info->rkey = htonl(rkey);
 	info->size = htonl(cb->size);
   	info->remote_offset = htonll(roffset);
   	info->request_type = htonl(PAGE_EVICT);
+	pr_info("copying the page content from the page address to the send_evict_buf(), of size %lu\n", PAGE_SIZE);
   	memcpy((void*)(info->page_content), page_address(page), PAGE_SIZE);
+	pr_info("memcpy was successful\n");
 }
 
 inline struct sswap_cb *sswap_rdma_get_cb(unsigned int cpuid,
@@ -703,7 +706,7 @@ int sswap_new_rdma_read_sync(struct page *page, u64 roffset)
 		return cb->state;
 	}
 
-	ret = ib_post_send(cb->qp, &cb->sq_wr, &bad_wr);
+	ret = ib_post_send(cb->qp, &cb->sq_pf_wr, &bad_wr);
 	if (ret) {
 		pr_info("post send error %d\n", ret);
 		return ret;
@@ -1352,7 +1355,7 @@ int sswap_new_rdma_write(struct page *page, u64 roffset)
 	}
 	pr_info("%s: page_evict_format_send() is set\n", __FUNCTION__);
 
-	ret = ib_post_send(cb->qp, &cb->sq_wr, &bad_wr);
+	ret = ib_post_send(cb->qp, &cb->sq_evict_wr, &bad_wr);
 	if (ret) {
 		pr_info("post send error %d\n", ret);
 		return ret;

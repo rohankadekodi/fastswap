@@ -320,6 +320,7 @@ static int rmserver_cq_event_handler(struct rmserver_cb *cb)
 			break;
 
 		case IBV_WC_RECV:
+			printf("server received a message\n");
 			ret = server_recv(cb, &wc);
 			if (ret) {
 				fprintf(stderr, "recv wc error: %d\n", ret);
@@ -565,6 +566,8 @@ static void *cq_thread(void *arg)
 			fprintf(stderr, "Failed to get cq event!\n");
 			pthread_exit(NULL);
 		}
+		printf("Got cq event\n");
+
 		if (ev_cq != cb->cq) {
 			fprintf(stderr, "Unknown CQ!\n");
 			pthread_exit(NULL);
@@ -574,6 +577,8 @@ static void *cq_thread(void *arg)
 			fprintf(stderr, "Failed to set notify!\n");
 			pthread_exit(NULL);
 		}
+
+		printf("calling rmserver_cq_event_handler\n");
 		ret = rmserver_cq_event_handler(cb);
 		ibv_ack_cq_events(cb->cq, 1);
 		if (ret)
