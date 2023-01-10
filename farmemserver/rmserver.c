@@ -25,19 +25,19 @@ const size_t PAGE_SIZE = 4096;
 void *far_memory;
 
 struct device {
-  struct ibv_pd *pd;
-  struct ibv_context *verbs;
+	struct ibv_pd *pd;
+	struct ibv_context *verbs;
 };
 
 struct queue {
-  struct ibv_qp *qp;
-  struct ibv_cq *cq;
-  struct rdma_cm_id *cm_id;
-  struct ctrl *ctrl;
-  enum {
-    INIT,
-    CONNECTED
-  } state;
+	struct ibv_qp *qp;
+	struct ibv_cq *cq;
+	struct rdma_cm_id *cm_id;
+	struct ctrl *ctrl;
+	enum {
+		INIT,
+		CONNECTED
+	} state;
 };
 
 /*
@@ -61,6 +61,7 @@ struct rmserver_rdma_info {
 	__be32 size;
 	__be64 remote_offset;
 	__be32 request_type;
+	uint8_t data[PAGE_SIZE];
 };
 
 /*
@@ -387,7 +388,7 @@ error:
 
 static void rmserver_setup_wr(struct rmserver_cb *cb)
 {
-	cb->recv_sgl.addr = (uint64_t) (unsigned long) &cb->mr_buffer;
+	cb->recv_sgl.addr = (uint64_t) (unsigned long) &cb->recv_buf;
 	cb->recv_sgl.length = CB_BUFFER_SIZE;
 	cb->recv_sgl.lkey = cb->mr_buffer->lkey;
 	cb->rq_wr.sg_list = &cb->recv_sgl;
@@ -588,7 +589,7 @@ static void *cq_thread(void *arg)
 
 static void rmserver_format_send(struct rmserver_cb *cb, char *buf, struct ibv_mr *mr, uint64_t roffset, enum request_type req)
 {
-	struct rmserver_rdma_info *info = (struct rmserver_rdma_info *)cb->send_buffer;
+	struct rmserver_rdma_info *info = (struct rmserver_rdma_info *)&cb->send_buf;
 
 	info->buf = htobe64((uint64_t) (unsigned long) buf);
 	info->rkey = htobe32(mr->rkey);
@@ -623,11 +624,11 @@ void* rmserver_test_server(void *arg)
 		rmserver_format_send(cb, cb->start_buf, cb->start_mr, cb->remote_offset, cb->request_type);
 		if (cb->request_type == PAGE_FAULT) {
 			printf("Received page fault\n");
-			memcpy((void*)((uint64_t)(cb->send_buffer) + sizeof(struct rmserver_rdma_info)), (void*)((uint64_t)(far_memory) + cb->remote_offset), PAGE_SIZE);
+			memcpy((void*)((uint64_t)&(cb->send_buf.data)), (void*)((uint64_t)(far_memory) + cb->remote_offset), PAGE_SIZE);
 			rdma_size = sizeof(struct rmserver_rdma_info) + PAGE_SIZE;
 		} else if (cb->request_type == PAGE_EVICT) {
 			printf("Received page eviction\n");
-			memcpy((void*)(((uint64_t)far_memory) + cb->remote_offset), (void*)((uint64_t)(cb->buffer) + sizeof(struct rmserver_rdma_info)), PAGE_SIZE);
+			memcpy((void*)(((uint64_t)far_memory) + cb->remote_offset), (void*)((uint64_t)&(cb->recv_buf.data)), PAGE_SIZE);
 			rdma_size = sizeof(struct rmserver_rdma_info);
 		}
 
@@ -636,7 +637,7 @@ void* rmserver_test_server(void *arg)
 		wr.num_sge = 1;
 		wr.send_flags = IBV_SEND_SIGNALED;
 
-		sge.addr = (uint64_t) cb->send_buffer;
+		sge.addr = (uint64_t) &cb->send_buf;
 		sge.length = rdma_size;
 
 		cb->req_state = RDMA_RESPONSE_STARTED;
@@ -935,8 +936,8 @@ int main(int argc, char **argv)
 
 void die(const char *reason)
 {
-  fprintf(stderr, "%s - errno: %d\n", reason, errno);
-  exit(EXIT_FAILURE);
+	fprintf(stderr, "%s - errno: %d\n", reason, errno);
+	exit(EXIT_FAILURE);
 }
 
 int alloc_control()
@@ -974,33 +975,30 @@ static device *get_device(struct rmserver_cb *cb)
 		cb->ctrl->dev = dev;
 	}
 
-	cb->buffer = malloc(CB_BUFFER_SIZE);
-	cb->send_buffer = malloc(CB_BUFFER_SIZE);
-	TEST_Z(cb->buffer);
-	TEST_Z(cb->send_buffer);
-
 	TEST_Z(cb->mr_buffer = ibv_reg_mr(
 		cb->ctrl->dev->pd,
-		cb->buffer,
-		CB_BUFFER_SIZE,
+		&cb->recv_buf,
+		sizeof cb->recv_buf,
 		IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ));
 
-	TEST_Z(cb->mr_send_buffer = ibv_reg_mr(cb->ctrl->dev->pd, cb->send_buffer,
-										CB_BUFFER_SIZE, 0));
+	printf("registered memory region of %zu bytes for recv\n", sizeof cb->recv_buf);
 
-	printf("registered memory region of %zu bytes\n", CB_BUFFER_SIZE);
+	TEST_Z(cb->mr_send_buffer = ibv_reg_mr(cb->ctrl->dev->pd, &cb->send_buf,
+										sizeof cb->send_buf, 0));
+
+	printf("registered memory region of %zu bytes for send\n", sizeof cb->send_buf);
 	return cb->ctrl->dev;
 }
 
 static void destroy_device(struct ctrl *ctrl)
 {
-  TEST_Z(ctrl->dev);
+	TEST_Z(ctrl->dev);
 
-  ibv_dereg_mr(ctrl->mr_buffer);
-  free(ctrl->buffer);
-  ibv_dealloc_pd(ctrl->dev->pd);
-  free(ctrl->dev);
-  ctrl->dev = NULL;
+	ibv_dereg_mr(ctrl->mr_buffer);
+	free(ctrl->buffer);
+	ibv_dealloc_pd(ctrl->dev->pd);
+	free(ctrl->dev);
+	ctrl->dev = NULL;
 }
 
 // static void create_qp(struct queue *q)
@@ -1130,34 +1128,34 @@ int on_connection(struct rmserver_cb *cb)
 
 int on_disconnect(struct rmserver_cb *cb)
 {
-  printf("%s\n", __FUNCTION__);
+	printf("%s\n", __FUNCTION__);
 
-  if (cb->state == rmserver_cb::CONNECTED) {
-    cb->state = rmserver_cb::INIT;
-    rdma_destroy_qp(cb->cm_id);
-    rdma_destroy_id(cb->cm_id);
-  }
+	if (cb->state == rmserver_cb::CONNECTED) {
+		cb->state = rmserver_cb::INIT;
+		rdma_destroy_qp(cb->cm_id);
+		rdma_destroy_id(cb->cm_id);
+	}
 
-  return 0;
+	return 0;
 }
 
 int on_event(struct rdma_cm_event *event)
 {
-  printf("%s\n", __FUNCTION__);
-  //struct queue *q = (struct queue *) event->id->context;
-  struct rmserver_cb *cb = (struct rmserver_cb *) event->id->context;
+	printf("%s\n", __FUNCTION__);
+	//struct queue *q = (struct queue *) event->id->context;
+	struct rmserver_cb *cb = (struct rmserver_cb *) event->id->context;
 
-  switch (event->event) {
-    case RDMA_CM_EVENT_CONNECT_REQUEST:
-      return on_connect_request(event->id, &event->param.conn);
-    case RDMA_CM_EVENT_ESTABLISHED:
-      return on_connection(cb);
-    case RDMA_CM_EVENT_DISCONNECTED:
-      on_disconnect(cb);
-      return 1;
-    default:
-      printf("unknown event: %s\n", rdma_event_str(event->event));
-      return 1;
-  }
+	switch (event->event) {
+		case RDMA_CM_EVENT_CONNECT_REQUEST:
+		return on_connect_request(event->id, &event->param.conn);
+		case RDMA_CM_EVENT_ESTABLISHED:
+		return on_connection(cb);
+		case RDMA_CM_EVENT_DISCONNECTED:
+		on_disconnect(cb);
+		return 1;
+		default:
+		printf("unknown event: %s\n", rdma_event_str(event->event));
+		return 1;
+	}
 }
 
