@@ -961,47 +961,47 @@ static int sswap_rdma_init_queue(struct sswap_rdma_ctrl *ctrl,
 	//   	return ret;
 }
 
-static void sswap_rdma_stop_queue(struct rdma_queue *q)
+static void sswap_rdma_stop_queue(struct sswap_cb *cb)
 {
-  rdma_disconnect(q->cm_id);
+	rdma_disconnect(cb->cm_id);
 }
 
-static void sswap_rdma_free_queue(struct rdma_queue *q)
+static void sswap_rdma_free_queue(struct sswap_cb *cb)
 {
-  rdma_destroy_qp(q->cm_id);
-  ib_free_cq(q->cq);
-  rdma_destroy_id(q->cm_id);
+  rdma_destroy_qp(cb->cm_id);
+  ib_free_cq(cb->cq);
+  rdma_destroy_id(cb->cm_id);
 }
 
 static int sswap_rdma_init_queues(struct sswap_rdma_ctrl *ctrl)
 {
-  int ret, i;
-  pr_info("num queues = %d\n", numqueues);
-  for (i = 0; i < numqueues; ++i) {
-    ret = sswap_rdma_init_queue(ctrl, i);
-    if (ret) {
-      pr_err("failed to initialized queue: %d\n", i);
-      goto out_free_queues;
-    }
-  }
+	int ret, i;
+	pr_info("num queues = %d\n", numqueues);
+	for (i = 0; i < numqueues; ++i) {
+		ret = sswap_rdma_init_queue(ctrl, i);
+		if (ret) {
+		pr_err("failed to initialized queue: %d\n", i);
+		goto out_free_queues;
+		}
+	}
 
-  return 0;
+	return 0;
 
 out_free_queues:
-  for (i--; i >= 0; i--) {
-    sswap_rdma_stop_queue(&ctrl->queues[i]);
-    sswap_rdma_free_queue(&ctrl->queues[i]);
-  }
+	for (i--; i >= 0; i--) {
+		sswap_rdma_stop_queue(&ctrl->cbs[i]);
+		sswap_rdma_free_queue(&ctrl->cbs[i]);
+	}
 
-  return ret;
+	return ret;
 }
 
 static void sswap_rdma_stopandfree_queues(struct sswap_rdma_ctrl *ctrl)
 {
   int i;
   for (i = 0; i < numqueues; ++i) {
-    sswap_rdma_stop_queue(&ctrl->queues[i]);
-    sswap_rdma_free_queue(&ctrl->queues[i]);
+    sswap_rdma_stop_queue(&ctrl->cbs[i]);
+    sswap_rdma_free_queue(&ctrl->cbs[i]);
   }
 }
 
@@ -1054,14 +1054,14 @@ static int sswap_rdma_create_ctrl(struct sswap_rdma_ctrl **c)
 
 static void __exit sswap_rdma_cleanup_module(void)
 {
-  sswap_rdma_stopandfree_queues(gctrl);
-  ib_unregister_client(&sswap_rdma_ib_client);
-  kfree(gctrl);
-  gctrl = NULL;
-  if (req_cache) {
-    kmem_cache_destroy(req_cache);
-  }
-  fastswap_print_timing_stats();
+	sswap_rdma_stopandfree_queues(gctrl);
+	ib_unregister_client(&sswap_rdma_ib_client);
+	kfree(gctrl);
+	gctrl = NULL;
+	if (req_cache) {
+		kmem_cache_destroy(req_cache);
+	}
+	fastswap_print_timing_stats();
 }
 
 static void sswap_rdma_write_done(struct ib_cq *cq, struct ib_wc *wc)

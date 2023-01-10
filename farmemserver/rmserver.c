@@ -639,6 +639,7 @@ void* rmserver_test_server(void *arg)
 
 		sge.addr = (uint64_t) &cb->send_buf;
 		sge.length = rdma_size;
+		sge.lkey = cb->mr_send_buffer->lkey;
 
 		cb->req_state = RDMA_RESPONSE_STARTED;
 
@@ -648,6 +649,7 @@ void* rmserver_test_server(void *arg)
 			fprintf(stderr, "post send error %d\n", ret);
 			break;
 		}
+		printf("sent reponse successfully\n");
 
 		while (!(cb->req_state == RDMA_RESPONSE_SENT)) {
 			// Spin Wait
