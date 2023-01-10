@@ -651,7 +651,6 @@ void* rmserver_test_server(void *arg)
 		while (!(cb->req_state == RDMA_RESPONSE_SENT)) {
 			// Spin Wait
 		}
-
 		rmserver_setup_wr(cb);
 	}
 
@@ -780,6 +779,7 @@ int main(int argc, char **argv)
 	struct rdma_cm_id *listener = NULL;
 	uint16_t port = 0;
 	int ret = 0;
+	struct ibv_recv_wr *bad_wr;
 
 	// memset(cb, 0, sizeof(*cb));
 	// cb->server = 1;
@@ -847,6 +847,11 @@ int main(int argc, char **argv)
 	for (unsigned int i = 0; i < NUM_QUEUES; ++i) {
 		printf("Starting test server: %d\n", i);
 		struct rmserver_cb *cb = &gctrl->cbs[i];
+
+		ret = ibv_post_recv(cb->qp, &cb->rq_wr, &bad_wr);
+		if (ret) {
+			fprintf(stderr, "ibv_post_recv failed: %d\n", ret);
+		}
 		
 		ret = pthread_create(&cb->cqthread, NULL, cq_thread, cb);
 		if (ret) {
