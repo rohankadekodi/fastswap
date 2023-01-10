@@ -388,8 +388,8 @@ error:
 
 static void rmserver_setup_wr(struct rmserver_cb *cb)
 {
-	cb->recv_sgl.addr = (uint64_t) (unsigned long) &cb->recv_buf;
-	cb->recv_sgl.length = CB_BUFFER_SIZE;
+	cb->recv_sgl.addr = (uint64_t) &cb->recv_buf;
+	cb->recv_sgl.length = sizeof cb->recv_buf;
 	cb->recv_sgl.lkey = cb->mr_buffer->lkey;
 	cb->rq_wr.sg_list = &cb->recv_sgl;
 	cb->rq_wr.num_sge = 1;
@@ -592,7 +592,7 @@ static void rmserver_format_send(struct rmserver_cb *cb, char *buf, struct ibv_m
 	struct rmserver_rdma_info *info = (struct rmserver_rdma_info *)&cb->send_buf;
 
 	info->buf = htobe64((uint64_t) (unsigned long) buf);
-	info->rkey = htobe32(mr->rkey);
+	info->rkey = htobe32(0);
 	info->size = htobe32(cb->size);	
 	info->remote_offset = htobe64(cb->remote_offset);
 	info->request_type = htobe32(cb->request_type);
