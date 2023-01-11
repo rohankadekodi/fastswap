@@ -568,6 +568,7 @@ static void sswap_cq_event_handler(struct ib_cq *cq, void *ctx)
 				goto error;
 			}
 		}
+		ret = 0;
 
 		switch (wc.opcode) {
 		case IB_WC_SEND:
@@ -592,7 +593,7 @@ static void sswap_cq_event_handler(struct ib_cq *cq, void *ctx)
 		case IB_WC_RECV:
 			//cb->stats.recv_bytes += sizeof(cb->recv_buf);
 			//cb->stats.recv_msgs++;
-			client_recv(cb, &wc);
+			ret = client_recv(cb, &wc);
 			if (ret) {
 				pr_info("recv wc error: %d\n", ret);
 				goto error;
@@ -648,6 +649,7 @@ static void sswap_page_fault_format_send(struct sswap_cb *cb, u64 buf, u64 roffs
 	struct sswap_pf_rdma_info *info = &cb->send_pf_buf;
 	u32 rkey = 0;
 
+	pr_info("%s: setting rdma rkey\n", __FUNCTION__);
 	// rkey = sswap_rdma_rkey(cb, buf, !cb->server_invalidate);
 	info->buf = htonll(buf);
 	info->rkey = htonl(rkey);
@@ -661,16 +663,16 @@ static void sswap_page_evict_format_send(struct sswap_cb *cb, u64 buf, u64 roffs
 	struct sswap_evict_rdma_info *info = &cb->send_evict_buf;
 	u32 rkey = 0;
 
-	pr_info("setting rdma rkey\n");
+	pr_info("%s: setting rdma rkey\n", __FUNCTION__);
 	// rkey = sswap_rdma_rkey(cb, buf, !cb->server_invalidate);
 	info->buf = htonll(buf);
 	info->rkey = htonl(rkey);
 	info->size = htonl(cb->size);
   	info->remote_offset = htonll(roffset);
   	info->request_type = htonl(PAGE_EVICT);
-	pr_info("copying the page content from the page address to the send_evict_buf(), of size %lu\n", PAGE_SIZE);
+	pr_info("%s: copying the page content from the page address to the send_evict_buf(), of size %lu\n", __FUNCTION__, PAGE_SIZE);
   	memcpy((void*)(info->page_content), page_address(page), PAGE_SIZE);
-	pr_info("memcpy was successful\n");
+	pr_info("%s: memcpy was successful\n", __FUNCTION__);
 }
 
 inline struct sswap_cb *sswap_rdma_get_cb(unsigned int cpuid,
@@ -696,6 +698,7 @@ int sswap_new_rdma_read_sync(struct page *page, u64 roffset)
 	struct ib_wc wc;
 	int ret;
 	struct sswap_cb *cb;
+	pr_info("%s: Got page fault RDMA read request\n", __FUNCTION__);
 
 	cb = sswap_rdma_get_cb(smp_processor_id() % numprocs, QP_READ_SYNC);
 	cb->state = RDMA_REQUESTED;
@@ -705,12 +708,14 @@ int sswap_new_rdma_read_sync(struct page *page, u64 roffset)
 		pr_info("sswap_page_fault_format_send() failed\n");
 		return cb->state;
 	}
+	pr_info("%s: page_evict_format_send() is set\n", __FUNCTION__);
 
 	ret = ib_post_send(cb->qp, &cb->sq_pf_wr, &bad_wr);
 	if (ret) {
 		pr_info("post send error %d\n", ret);
 		return ret;
 	}
+	pr_info("%s: ibv_post_send() is done\n", __FUNCTION__);
 
 	// Spin wait for send completion
 	while ((ret = ib_poll_cq(cb->cq, 1, &wc) == 0));
@@ -723,6 +728,7 @@ int sswap_new_rdma_read_sync(struct page *page, u64 roffset)
 		pr_info("send completion error %d\n", wc.status);
 		return wc.status;
 	}
+	pr_info("%s: Waiting to receive RDMA Response\n", __FUNCTION__);
 
 	while (cb->state != RDMA_RECEIVED) {
 		sswap_cq_event_handler(cb->cq, cb);
@@ -730,10 +736,10 @@ int sswap_new_rdma_read_sync(struct page *page, u64 roffset)
 			return -1;
 		}
 	}
-	
+	pr_info("%s: Received RDMA response, now writing to local page\n", __FUNCTION__);
 
 	// Actually write to the page
-	memcpy((void*)page_address(page), (void*)((u64)(&(cb->recv_buf)) + sizeof(struct sswap_rdma_info)), PAGE_SIZE);
+	memcpy((void*)page_address(page), (void*)((u64)&(cb->recv_buf.page_content)), PAGE_SIZE);
 	SetPageUptodate(page);
 	unlock_page(page);
 
@@ -1379,6 +1385,10 @@ int sswap_new_rdma_write(struct page *page, u64 roffset)
 
 	while (cb->state != RDMA_RECEIVED) {
 		sswap_cq_event_handler(cb->cq, cb);
+		if (cb->state == ERROR) {
+			pr_info("sswap_cq_event_handler returned ERROR\n");
+			return -1;
+		}
 	}
 
 	pr_info("Received RDMA meaning that the remote server has reflected the eviction\n");
