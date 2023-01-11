@@ -726,6 +726,9 @@ int sswap_new_rdma_read_sync(struct page *page, u64 roffset)
 
 	while (cb->state != RDMA_RECEIVED) {
 		sswap_cq_event_handler(cb->cq, cb);
+		if (cb->state == ERROR) {
+			return -1;
+		}
 	}
 	
 
