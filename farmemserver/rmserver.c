@@ -161,6 +161,7 @@ struct rmserver_cb {
 	void *send_buffer;
 	struct ibv_mr *mr_buffer;
 	struct ibv_mr *mr_send_buffer;
+	volatile int req_done;
 };
 
 struct ctrl {
@@ -266,6 +267,8 @@ static unsigned int queue_ctr = 0;
 
 static int server_recv(struct rmserver_cb *cb, struct ibv_wc *wc)
 {
+	printf("server received request at cb %p\n", cb);
+
 	if (wc->byte_len != sizeof(cb->recv_buf)) {
 		fprintf(stderr, "Received bogus data, size %d\n", wc->byte_len);
 		return -1;
@@ -307,7 +310,9 @@ static int rmserver_cq_event_handler(struct rmserver_cb *cb)
 
 		switch (wc.opcode) {
 		case IBV_WC_SEND:
+			printf("cb = %p, send has been completed\n", cb);
 			cb->req_state = RDMA_RESPONSE_SENT;
+			sem_post(&cb->sem);
 			break;
 
 		case IBV_WC_RDMA_WRITE:
@@ -562,12 +567,13 @@ static void *cq_thread(void *arg)
 	while (1) {	
 		pthread_testcancel();
 
+		printf("waiting for event in %p\n", cb);
 		ret = ibv_get_cq_event(cb->channel, &ev_cq, &ev_ctx);
 		if (ret) {
 			fprintf(stderr, "Failed to get cq event!\n");
 			pthread_exit(NULL);
 		}
-		printf("Got cq event\n");
+		printf("Got cq event in %p\n", cb);
 
 		if (ev_cq != cb->cq) {
 			fprintf(stderr, "Unknown CQ!\n");
@@ -611,10 +617,11 @@ void* rmserver_test_server(void *arg)
 
 	while (1) {
 		/* Wait for client's Start STAG/TO/Len */
+		printf("%s: waiting for request at cb = %p\n", __FUNCTION__, cb);
 		sem_wait(&cb->sem);
 		if (cb->req_state != RDMA_RECEIVED) {
 			fprintf(stderr, "wait for RDMA_READ_ADV state %d\n",
-				cb->state);
+					cb->state);
 			ret = -1;
 			break;
 		}
@@ -651,10 +658,14 @@ void* rmserver_test_server(void *arg)
 		}
 		printf("sent reponse successfully\n");
 
-		while (!(cb->req_state == RDMA_RESPONSE_SENT)) {
-			// Spin Wait
+		sem_wait(&cb->sem);
+		if (cb->state != RDMA_RESPONSE_SENT) {
+			fprintf(stderr, "wait for RDMA_RESPONSE_SENT state %d\n",
+				cb->state);
+			ret = -1;
+			break;
 		}
-		rmserver_setup_wr(cb);
+		DEBUG_LOG("server received send complete\n");
 	}
 
 	return (cb->req_state == DISCONNECTED) ? 0 : 0;
@@ -876,7 +887,7 @@ int main(int argc, char **argv)
 		rdma_ack_cm_event(event);
 
 		if (on_event(&event_copy))
-		break;
+			break;
 	}
 
 	rdma_destroy_event_channel(ec);
@@ -907,13 +918,13 @@ int main(int argc, char **argv)
 
 		// handle connection requests
 		while (rdma_get_cm_event(ec, &event) == 0) {
-		struct rdma_cm_event event_copy;
+			struct rdma_cm_event event_copy;
 
-		memcpy(&event_copy, event, sizeof(*event));
-		rdma_ack_cm_event(event);
+			memcpy(&event_copy, event, sizeof(*event));
+			rdma_ack_cm_event(event);
 
-		if (on_event(&event_copy) || q->state == queue::CONNECTED)
-			break;
+			if (on_event(&event_copy) || q->state == queue::CONNECTED)
+				break;
 		}
 	}
 
@@ -927,7 +938,7 @@ int main(int argc, char **argv)
 		rdma_ack_cm_event(event);
 
 		if (on_event(&event_copy))
-		break;
+			break;
 	}
 
 	rdma_destroy_event_channel(ec);
@@ -1149,14 +1160,14 @@ int on_event(struct rdma_cm_event *event)
 
 	switch (event->event) {
 		case RDMA_CM_EVENT_CONNECT_REQUEST:
-		return on_connect_request(event->id, &event->param.conn);
+			return on_connect_request(event->id, &event->param.conn);
 		case RDMA_CM_EVENT_ESTABLISHED:
-		return on_connection(cb);
+			return on_connection(cb);
 		case RDMA_CM_EVENT_DISCONNECTED:
-		on_disconnect(cb);
+			on_disconnect(cb);
 		return 1;
 		default:
-		printf("unknown event: %s\n", rdma_event_str(event->event));
+			printf("unknown event: %s\n", rdma_event_str(event->event));
 		return 1;
 	}
 }

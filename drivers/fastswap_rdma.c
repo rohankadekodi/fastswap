@@ -1370,26 +1370,35 @@ int sswap_new_rdma_write(struct page *page, u64 roffset)
 		return ret;
 	}
 	pr_info("%s: ib_post_send() is done\n", __FUNCTION__);
-
-	// Spin wait for send completion
-	while ((ret = ib_poll_cq(cb->cq, 1, &wc) == 0));
-	if (ret < 0) {
-		pr_info("poll error %d\n", ret);
+	
+	/* Wait for server to ACK */
+	wait_event_interruptible(cb->sem, cb->state >= RDMA_RECEIVED);
+	if (cb->state != RDMA_RECEIVED) {
+		pr_info("wait for RDMA_RECEIVED state %d\n",
+				cb->state);
+		ret = -1;
 		return ret;
 	}
 
-	if (wc.status) {
-		pr_info("send completion error %d\n", wc.status);
-		return wc.status;
-	}
+	// // Spin wait for send completion
+	// while ((ret = ib_poll_cq(cb->cq, 1, &wc) == 0));
+	// if (ret < 0) {
+	// 	pr_info("poll error %d\n", ret);
+	// 	return ret;
+	// }
 
-	while (cb->state != RDMA_RECEIVED) {
-		sswap_cq_event_handler(cb->cq, cb);
-		if (cb->state == ERROR) {
-			pr_info("sswap_cq_event_handler returned ERROR\n");
-			return -1;
-		}
-	}
+	// if (wc.status) {
+	// 	pr_info("send completion error %d\n", wc.status);
+	// 	return wc.status;
+	// }
+
+	// while (cb->state != RDMA_RECEIVED) {
+	// 	sswap_cq_event_handler(cb->cq, cb);
+	// 	if (cb->state == ERROR) {
+	// 		pr_info("sswap_cq_event_handler returned ERROR\n");
+	// 		return -1;
+	// 	}
+	// }
 
 	pr_info("Received RDMA meaning that the remote server has reflected the eviction\n");
 
