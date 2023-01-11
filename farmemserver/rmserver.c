@@ -659,13 +659,13 @@ void* rmserver_test_server(void *arg)
 		printf("sent reponse successfully\n");
 
 		sem_wait(&cb->sem);
-		if (cb->state != RDMA_RESPONSE_SENT) {
+		if (cb->req_state != RDMA_RESPONSE_SENT) {
 			fprintf(stderr, "wait for RDMA_RESPONSE_SENT state %d\n",
 				cb->state);
 			ret = -1;
 			break;
 		}
-		DEBUG_LOG("server received send complete\n");
+		printf("server received send complete\n");
 	}
 
 	return (cb->req_state == DISCONNECTED) ? 0 : 0;
