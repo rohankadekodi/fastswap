@@ -96,6 +96,7 @@ struct sswap_cb {
 	struct ib_cq *cq;
 	struct ib_pd *pd;
 	struct ib_qp *qp;
+	spinlock_t s_lock;
 
 	struct ib_mr *dma_mr;
 

@@ -911,6 +911,8 @@ static int sswap_rdma_init_queue(struct sswap_rdma_ctrl *ctrl,
 	cb->size = 64;
 	cb->txdepth = 64;
 	cb->addr_str = serverip;
+	spin_lock_init(&cb->s_lock);  
+
 	init_waitqueue_head(&cb->sem);
 
 	pr_info("start: %s\n", __FUNCTION__);
@@ -1031,34 +1033,34 @@ static int sswap_rdma_parse_ipaddr(struct sockaddr_in *saddr, char *ip)
 
 static int sswap_rdma_create_ctrl(struct sswap_rdma_ctrl **c)
 {
-  int ret;
-  struct sswap_rdma_ctrl *ctrl;
-  pr_info("will try to connect to %s:%d\n", serverip, serverport);
+	int ret;
+	struct sswap_rdma_ctrl *ctrl;
+	pr_info("will try to connect to %s:%d\n", serverip, serverport);
 
-  *c = kzalloc(sizeof(struct sswap_rdma_ctrl), GFP_KERNEL);
-  if (!*c) {
-    pr_err("no mem for ctrl\n");
-    return -ENOMEM;
-  }
-  ctrl = *c;
+	*c = kzalloc(sizeof(struct sswap_rdma_ctrl), GFP_KERNEL);
+	if (!*c) {
+		pr_err("no mem for ctrl\n");
+		return -ENOMEM;
+	}
+	ctrl = *c;
 
-  ctrl->cbs = kzalloc(sizeof(struct sswap_cb) * numqueues, GFP_KERNEL);  
-  ctrl->queues = kzalloc(sizeof(struct rdma_queue) * numqueues, GFP_KERNEL);
-  ret = sswap_rdma_parse_ipaddr(&(ctrl->addr_in), serverip);
-  if (ret) {
-    pr_err("sswap_rdma_parse_ipaddr failed: %d\n", ret);
-    return -EINVAL;
-  }
-  ctrl->addr_in.sin_port = cpu_to_be16(serverport);
+	ctrl->cbs = kzalloc(sizeof(struct sswap_cb) * numqueues, GFP_KERNEL);
+	ctrl->queues = kzalloc(sizeof(struct rdma_queue) * numqueues, GFP_KERNEL);
+	ret = sswap_rdma_parse_ipaddr(&(ctrl->addr_in), serverip);
+	if (ret) {
+		pr_err("sswap_rdma_parse_ipaddr failed: %d\n", ret);
+		return -EINVAL;
+	}
+	ctrl->addr_in.sin_port = cpu_to_be16(serverport);
 
-  ret = sswap_rdma_parse_ipaddr(&(ctrl->srcaddr_in), clientip);
-  if (ret) {
-    pr_err("sswap_rdma_parse_ipaddr failed: %d\n", ret);
-    return -EINVAL;
-  }
-  /* no need to set the port on the srcaddr */
+	ret = sswap_rdma_parse_ipaddr(&(ctrl->srcaddr_in), clientip);
+	if (ret) {
+		pr_err("sswap_rdma_parse_ipaddr failed: %d\n", ret);
+		return -EINVAL;
+	}
+	/* no need to set the port on the srcaddr */
 
-  return sswap_rdma_init_queues(ctrl);
+	return sswap_rdma_init_queues(ctrl);
 }
 
 static void __exit sswap_rdma_cleanup_module(void)
@@ -1355,6 +1357,8 @@ int sswap_new_rdma_write(struct page *page, u64 roffset)
 	BUG_ON(cb == NULL);
 	pr_info("%s: got cb = %p\n", __FUNCTION__, cb);
 
+	spin_lock(&cb->s_lock);
+
 	cb->state = RDMA_REQUESTED;
 
 	sswap_page_evict_format_send(cb, cb->start_dma_addr, roffset, page);
@@ -1403,6 +1407,7 @@ int sswap_new_rdma_write(struct page *page, u64 roffset)
 
 	pr_info("Received RDMA meaning that the remote server has reflected the eviction\n");
 
+	spin_unlock(&cb->s_lock);
 	return 0;
 }
 EXPORT_SYMBOL(sswap_new_rdma_write);
