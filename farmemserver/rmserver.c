@@ -614,16 +614,18 @@ void* rmserver_test_server(void *arg)
 	int ret;
 	struct rmserver_cb *cb = (struct rmserver_cb *)arg;
 	uint64_t rdma_size = 0;
+	struct ibv_wc wc;
 
 	while (1) {
 		/* Wait for client's Start STAG/TO/Len */
 		printf("%s: waiting for request at cb = %p\n", __FUNCTION__, cb);
-		sem_wait(&cb->sem);
-		if (cb->req_state != RDMA_RECEIVED) {
-			fprintf(stderr, "wait for RDMA_READ_ADV state %d\n",
-					cb->state);
-			ret = -1;
-			break;
+		// sem_wait(&cb->sem);
+		while (cb->req_state != RDMA_RECEIVED) {
+			rmserver_cq_event_handler(cb);
+			// fprintf(stderr, "wait for RDMA_READ_ADV state %d\n",
+			// 		cb->state);
+			// ret = -1;
+			// break;
 		}
 
 		printf("RDMA has been received\n");
@@ -658,14 +660,24 @@ void* rmserver_test_server(void *arg)
 		}
 		printf("sent reponse successfully\n");
 
-		sem_wait(&cb->sem);
-		if (cb->req_state != RDMA_RESPONSE_SENT) {
-			fprintf(stderr, "wait for RDMA_RESPONSE_SENT state %d\n",
-				cb->state);
-			ret = -1;
-			break;
+		while ((ret = ibv_poll_cq(cb->cq, 1, &wc) == 0));
+		if (ret < 0) {
+			printf("poll error %d\n", ret);
+			return NULL;
 		}
-		printf("server received send complete\n");
+		if (wc.status) {
+			printf("send completing error %d\n", wc.status);
+			return NULL;
+		}
+
+		// sem_wait(&cb->sem);
+		// if (cb->req_state != RDMA_RESPONSE_SENT) {
+		// 	fprintf(stderr, "wait for RDMA_RESPONSE_SENT state %d\n",
+		// 		cb->state);
+		// 	ret = -1;
+		// 	break;
+		// }
+		// printf("server received send complete\n");
 	}
 
 	return (cb->req_state == DISCONNECTED) ? 0 : 0;
