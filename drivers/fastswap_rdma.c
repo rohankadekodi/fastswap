@@ -1496,22 +1496,24 @@ out:
  * posts an RDMA read on this cpu's qp */
 int sswap_rdma_read_async(struct page *page, u64 roffset)
 {
-  struct rdma_queue *q;
-  int ret;
+	struct rdma_queue *q;
+	int ret;
 
-  timing_t read_async_time;
+	timing_t read_async_time;
 
-  FASTSWAP_START_TIMING(read_async_t, read_async_time);
+	return sswap_new_rdma_read_sync(page, roffset);
 
-  VM_BUG_ON_PAGE(!PageSwapCache(page), page);
-  VM_BUG_ON_PAGE(!PageLocked(page), page);
-  VM_BUG_ON_PAGE(PageUptodate(page), page);
+	//   FASTSWAP_START_TIMING(read_async_t, read_async_time);
 
-  q = sswap_rdma_get_queue(smp_processor_id() % numprocs, QP_READ_ASYNC);
-  ret = begin_read(q, page, roffset);
-  return ret;
+	//   VM_BUG_ON_PAGE(!PageSwapCache(page), page);
+	//   VM_BUG_ON_PAGE(!PageLocked(page), page);
+	//   VM_BUG_ON_PAGE(PageUptodate(page), page);
 
-  FASTSWAP_END_TIMING(read_async_t, read_async_time);
+	//   q = sswap_rdma_get_queue(smp_processor_id() % numprocs, QP_READ_ASYNC);
+	//   ret = begin_read(q, page, roffset);
+	//   return ret;
+
+	//   FASTSWAP_END_TIMING(read_async_t, read_async_time);
 }
 EXPORT_SYMBOL(sswap_rdma_read_async);
 
