@@ -267,10 +267,10 @@ static unsigned int queue_ctr = 0;
 
 static int server_recv(struct rmserver_cb *cb, struct ibv_wc *wc)
 {
-	if (wc->byte_len != sizeof(cb->recv_buf)) {
-		fprintf(stderr, "Received bogus data, size %d\n", wc->byte_len);
-		return -1;
-	}
+	// if (wc->byte_len != sizeof(cb->recv_buf)) {
+	// 	fprintf(stderr, "Received bogus data, size %d\n", wc->byte_len);
+	// 	return -1;
+	// }
 
 	cb->remote_addr = be64toh(cb->recv_buf.buf);
 	cb->remote_rkey = be32toh(cb->recv_buf.rkey);
@@ -634,11 +634,11 @@ void* rmserver_test_server(void *arg)
 		if (cb->request_type == PAGE_FAULT) {
 			printf("Received page fault\n");
 			memcpy((void*)((uint64_t)&(cb->send_buf.data)), (void*)((uint64_t)(far_memory) + cb->remote_offset), PAGE_SIZE);
-			rdma_size = sizeof(struct rmserver_rdma_info) + PAGE_SIZE;
+			rdma_size = sizeof(struct rmserver_rdma_info);
 		} else if (cb->request_type == PAGE_EVICT) {
 			printf("Received page eviction\n");
 			memcpy((void*)(((uint64_t)far_memory) + cb->remote_offset), (void*)((uint64_t)&(cb->recv_buf.data)), PAGE_SIZE);
-			rdma_size = sizeof(struct rmserver_rdma_info);
+			rdma_size = sizeof(struct rmserver_rdma_info) - PAGE_SIZE;
 		}
 
 		wr.opcode = IBV_WR_SEND;

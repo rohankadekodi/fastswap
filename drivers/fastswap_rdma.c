@@ -532,11 +532,11 @@ static int sswap_bind_client(struct sswap_cb *cb)
 
 static int client_recv(struct sswap_cb *cb, struct ib_wc *wc)
 {
-	pr_info("Client received data.\n");
-	if (wc->byte_len < sizeof(cb->recv_buf)) {
-		pr_info("Received bogus data, size %d\n", wc->byte_len);
-		return -1;
-	}
+	// pr_info("Client received data.\n");
+	// if (wc->byte_len < sizeof(cb->recv_buf)) {
+	// 	pr_info("Received bogus data, size %d\n", wc->byte_len);
+	// 	return -1;
+	// }
 
 	pr_info("client_recv() remote_offset = %llu\n", ntohll(cb->recv_buf.remote_offset));
 
