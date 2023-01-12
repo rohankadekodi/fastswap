@@ -1585,8 +1585,9 @@ EXPORT_SYMBOL(sswap_rdma_read_sync);
 
 int sswap_rdma_poll_load(int cpu)
 {
-  struct rdma_queue *q = sswap_rdma_get_queue(cpu, QP_READ_SYNC);
-  return drain_queue(q);
+//   struct rdma_queue *q = sswap_rdma_get_queue(cpu, QP_READ_SYNC);
+//   return drain_queue(q);
+	return 1;
 }
 EXPORT_SYMBOL(sswap_rdma_poll_load);
 
