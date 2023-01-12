@@ -205,6 +205,7 @@ struct sswap_rdma_ctrl {
 	struct sswap_rdma_dev *rdev; // TODO: move this to queue
 	struct rdma_queue *queues;
 	struct sswap_rdma_memregion servermr;
+	spinlock_t s_lock;
 
 	struct sswap_cb *cbs;
 
