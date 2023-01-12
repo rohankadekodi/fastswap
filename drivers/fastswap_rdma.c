@@ -694,74 +694,65 @@ inline struct sswap_cb *sswap_rdma_get_cb(unsigned int cpuid,
 
 int sswap_new_rdma_read_sync(struct page *page, u64 roffset)
 {
-	// struct ib_send_wr *bad_wr;
-	// struct ib_wc wc;
-	// int ret;
-	// struct sswap_cb *cb;
-	// pr_info("%s: Got page fault RDMA read request\n", __FUNCTION__);
+	struct ib_send_wr *bad_wr;
+	struct ib_wc wc;
+	int ret;
+	struct sswap_cb *cb;
+	pr_info("%s: Got page fault RDMA read request\n", __FUNCTION__);
 
-	// cb = sswap_rdma_get_cb(smp_processor_id() % numprocs, QP_READ_SYNC);
+	cb = sswap_rdma_get_cb(smp_processor_id() % numprocs, QP_READ_SYNC);
 
-	// spin_lock(&gctrl->s_lock);
+	spin_lock(&gctrl->s_lock);
 
-	// cb->state = RDMA_REQUESTED;
+	cb->state = RDMA_REQUESTED;
 
-	// sswap_page_fault_format_send(cb, cb->start_dma_addr, roffset);
-	// if (cb->state == ERROR) {
-	// 	pr_info("sswap_page_fault_format_send() failed\n");
-	// 	spin_unlock(&gctrl->s_lock);
-	// 	return cb->state;
-	// }
-	// pr_info("%s: page_evict_format_send() is set\n", __FUNCTION__);
+	sswap_page_fault_format_send(cb, cb->start_dma_addr, roffset);
+	if (cb->state == ERROR) {
+		pr_info("sswap_page_fault_format_send() failed\n");
+		spin_unlock(&gctrl->s_lock);
+		return cb->state;
+	}
+	pr_info("%s: page_evict_format_send() is set\n", __FUNCTION__);
 
-	// ret = ib_post_send(cb->qp, &cb->sq_pf_wr, &bad_wr);
-	// if (ret) {
-	// 	pr_info("post send error %d\n", ret);
-	// 	spin_unlock(&gctrl->s_lock);
-	// 	return ret;
-	// }
-	// pr_info("%s: ibv_post_send() is done\n", __FUNCTION__);
+	ret = ib_post_send(cb->qp, &cb->sq_pf_wr, &bad_wr);
+	if (ret) {
+		pr_info("post send error %d\n", ret);
+		spin_unlock(&gctrl->s_lock);
+		return ret;
+	}
+	pr_info("%s: ibv_post_send() is done\n", __FUNCTION__);
 
-	// // Spin wait for send completion
-	// while ((ret = ib_poll_cq(cb->cq, 1, &wc) == 0));
-	// if (ret < 0) {
-	// 	pr_info("poll error %d\n", ret);
-	// 	spin_unlock(&gctrl->s_lock);
-	// 	return ret;
-	// }
+	// Spin wait for send completion
+	while ((ret = ib_poll_cq(cb->cq, 1, &wc) == 0));
+	if (ret < 0) {
+		pr_info("poll error %d\n", ret);
+		spin_unlock(&gctrl->s_lock);
+		return ret;
+	}
 
-	// if (wc.status) {
-	// 	pr_info("send completion error %d\n", wc.status);
-	// 	spin_unlock(&gctrl->s_lock);
-	// 	return wc.status;
-	// }
-	// pr_info("%s: Waiting to receive RDMA Response\n", __FUNCTION__);
+	if (wc.status) {
+		pr_info("send completion error %d\n", wc.status);
+		spin_unlock(&gctrl->s_lock);
+		return wc.status;
+	}
+	pr_info("%s: Waiting to receive RDMA Response\n", __FUNCTION__);
 
-	// while (cb->state != RDMA_RECEIVED) {
-	// 	sswap_cq_event_handler(cb->cq, cb);
-	// 	if (cb->state == ERROR) {
-	// 		spin_unlock(&gctrl->s_lock);
-	// 		return -1;
-	// 	}
-	// }
-	// pr_info("%s: Received RDMA response, now writing to local page\n", __FUNCTION__);
+	while (cb->state != RDMA_RECEIVED) {
+		sswap_cq_event_handler(cb->cq, cb);
+		if (cb->state == ERROR) {
+			spin_unlock(&gctrl->s_lock);
+			return -1;
+		}
+	}
+	pr_info("%s: Received RDMA response, now writing to local page\n", __FUNCTION__);
 
-	// // Actually write to the page
+	// Actually write to the page
 	// memset((void*)page_address(page), 'A', PAGE_SIZE);
-	// // memcpy((void*)page_address(page), (void*)((u64)&(cb->recv_buf.page_content)), PAGE_SIZE);
-	// SetPageUptodate(page);
-	// unlock_page(page);
-
-	// spin_unlock(&gctrl->s_lock);
-
-	VM_BUG_ON_PAGE(!PageSwapCache(page), page);
-	VM_BUG_ON_PAGE(!PageLocked(page), page);
-	VM_BUG_ON_PAGE(PageUptodate(page), page);
-
-	memset((void*)page_address(page), 'A', PAGE_SIZE);
-	
+	memcpy((void*)page_address(page), (void*)((u64)&(cb->recv_buf.page_content)), PAGE_SIZE);
 	SetPageUptodate(page);
 	unlock_page(page);
+
+	spin_unlock(&gctrl->s_lock);
 
 	return 0;
 }
