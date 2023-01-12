@@ -280,7 +280,7 @@ static int server_recv(struct rmserver_cb *cb, struct ibv_wc *wc)
 
 	cb->req_state = RDMA_RECEIVED;
 
-	printf("server received request of remote offset = %llu\n", cb->remote_offset);
+	// printf("server received request of remote offset = %llu\n", cb->remote_offset);
 
 	return 0;
 }
@@ -310,7 +310,7 @@ static int rmserver_cq_event_handler(struct rmserver_cb *cb)
 
 		switch (wc.opcode) {
 		case IBV_WC_SEND:
-			printf("cb = %p, send has been completed\n", cb);
+			// printf("cb = %p, send has been completed\n", cb);
 			cb->req_state = RDMA_RESPONSE_SENT;
 			sem_post(&cb->sem);
 			break;
@@ -326,7 +326,7 @@ static int rmserver_cq_event_handler(struct rmserver_cb *cb)
 			break;
 
 		case IBV_WC_RECV:
-			printf("server received a message\n");
+			// printf("server received a message\n");
 			ret = server_recv(cb, &wc);
 			if (ret) {
 				fprintf(stderr, "recv wc error: %d\n", ret);
@@ -618,7 +618,7 @@ void* rmserver_test_server(void *arg)
 
 	while (1) {
 		/* Wait for client's Start STAG/TO/Len */
-		printf("%s: waiting for request at cb = %p\n", __FUNCTION__, cb);
+		// printf("%s: waiting for request at cb = %p\n", __FUNCTION__, cb);
 		// sem_wait(&cb->sem);
 		while (cb->req_state != RDMA_RECEIVED) {
 			rmserver_cq_event_handler(cb);
@@ -628,15 +628,15 @@ void* rmserver_test_server(void *arg)
 			// break;
 		}
 
-		printf("RDMA has been received\n");
+		// printf("RDMA has been received\n");
 
 		rmserver_format_send(cb, cb->start_buf, cb->start_mr, cb->remote_offset, cb->request_type);
 		if (cb->request_type == PAGE_FAULT) {
-			printf("Received page fault\n");
+			// printf("Received page fault\n");
 			memcpy((void*)((uint64_t)&(cb->send_buf.data)), (void*)((uint64_t)(far_memory) + cb->remote_offset), PAGE_SIZE);
 			rdma_size = sizeof(struct rmserver_rdma_info);
 		} else if (cb->request_type == PAGE_EVICT) {
-			printf("Received page eviction\n");
+			// printf("Received page eviction\n");
 			memcpy((void*)(((uint64_t)far_memory) + cb->remote_offset), (void*)((uint64_t)&(cb->recv_buf.data)), PAGE_SIZE);
 			rdma_size = sizeof(struct rmserver_rdma_info) - PAGE_SIZE;
 		}
@@ -658,7 +658,7 @@ void* rmserver_test_server(void *arg)
 			fprintf(stderr, "post send error %d\n", ret);
 			break;
 		}
-		printf("sent reponse successfully\n");
+		// printf("sent reponse successfully\n");
 
 		while ((ret = ibv_poll_cq(cb->cq, 1, &wc) == 0));
 		if (ret < 0) {
@@ -670,7 +670,7 @@ void* rmserver_test_server(void *arg)
 			return NULL;
 		}
 
-		printf("SENDING HAS BEEN COMPLETED\n");
+		// printf("SENDING HAS BEEN COMPLETED\n");
 
 		// sem_wait(&cb->sem);
 		// if (cb->req_state != RDMA_RESPONSE_SENT) {
