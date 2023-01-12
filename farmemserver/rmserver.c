@@ -272,10 +272,10 @@ static int server_recv(struct rmserver_cb *cb, struct ibv_wc *wc)
 		return -1;
 	}
 
-	cb->remote_rkey = be32toh(cb->recv_buf.rkey);
 	cb->remote_addr = be64toh(cb->recv_buf.buf);
+	cb->remote_rkey = be32toh(cb->recv_buf.rkey);
 	cb->remote_len  = be32toh(cb->recv_buf.size);
-	cb->remote_offset = be32toh(cb->recv_buf.remote_offset);
+	cb->remote_offset = be64toh(cb->recv_buf.remote_offset);
 	cb->request_type = (enum request_type)be32toh(cb->recv_buf.request_type);
 
 	cb->req_state = RDMA_RECEIVED;

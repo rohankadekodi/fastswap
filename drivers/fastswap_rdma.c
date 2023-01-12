@@ -649,7 +649,7 @@ static void sswap_page_fault_format_send(struct sswap_cb *cb, u64 buf, u64 roffs
 	struct sswap_pf_rdma_info *info = &cb->send_pf_buf;
 	u32 rkey = 0;
 
-	pr_info("%s: setting rdma rkey\n", __FUNCTION__);
+	pr_info("%s: setting remote offset %lu\n", roffset, __FUNCTION__);
 	// rkey = sswap_rdma_rkey(cb, buf, !cb->server_invalidate);
 	info->buf = htonll(buf);
 	info->rkey = htonl(rkey);
@@ -1355,7 +1355,7 @@ int sswap_new_rdma_write(struct page *page, u64 roffset)
 	BUG_ON(cb == NULL);
 	pr_info("%s: got cb = %p\n", __FUNCTION__, cb);
 
-	cb->state = RDMA_READ_ADV;
+	cb->state = RDMA_REQUESTED;
 
 	sswap_page_evict_format_send(cb, cb->start_dma_addr, roffset, page);
 	if (cb->state == ERROR) {
