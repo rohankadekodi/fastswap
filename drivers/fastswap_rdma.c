@@ -753,8 +753,8 @@ int sswap_new_rdma_read_sync(struct page *page, u64 roffset)
 	spin_unlock(&cb->s_lock);
 
 	// Actually write to the page
-	memset((void*)page_address(page), 'A', PAGE_SIZE);
-	// memcpy((void*)page_address(page), (void*)((u64)&(cb->recv_buf.page_content)), PAGE_SIZE);
+	// memset((void*)page_address(page), 'A', PAGE_SIZE);
+	memcpy((void*)page_address(page), (void*)((u64)&(cb->recv_buf.page_content)), PAGE_SIZE);
 	SetPageUptodate(page);
 	unlock_page(page);
 
