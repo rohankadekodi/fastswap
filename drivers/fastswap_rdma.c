@@ -1678,14 +1678,14 @@ static int __init sswap_rdma_init_module(void)
     return -ENOMEM;
   }
 
-  snprintf(receiver_thread_name, strlen(receiver_thread_name), "kthread_%d", 1);
-  receiver_thread = kthread_create(receiver_loop, &receiver_thread_idx, (const char *)receiver_thread_name);
-  if (receiver_thread != NULL) {
-	  wake_up_process(receiver_thread);
-	  pr_info("%s is running\n", receiver_thread_name);
-  } else {
-	  pr_info("kthread %s could not be created\n", receiver_thread_name);
-  }
+//   snprintf(receiver_thread_name, strlen(receiver_thread_name), "kthread_%d", 1);
+//   receiver_thread = kthread_create(receiver_loop, &receiver_thread_idx, (const char *)receiver_thread_name);
+//   if (receiver_thread != NULL) {
+// 	  wake_up_process(receiver_thread);
+// 	  pr_info("%s is running\n", receiver_thread_name);
+//   } else {
+// 	  pr_info("kthread %s could not be created\n", receiver_thread_name);
+//   }
 
   ib_register_client(&sswap_rdma_ib_client);
   ret = sswap_rdma_create_ctrl(&gctrl);

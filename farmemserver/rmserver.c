@@ -17,7 +17,7 @@
 
 const size_t BUFFER_SIZE = 1024 * 1024 * 1024 * 32l;
 const size_t CB_BUFFER_SIZE = 1024 * 1024 * 4l;
-const unsigned int NUM_PROCS = 4;
+const unsigned int NUM_PROCS = 1;
 const unsigned int NUM_QUEUES_PER_PROC = 3;
 const unsigned int NUM_QUEUES = NUM_PROCS * NUM_QUEUES_PER_PROC;
 const size_t PAGE_SIZE = 4096;
