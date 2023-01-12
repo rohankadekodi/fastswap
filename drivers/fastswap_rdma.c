@@ -663,7 +663,7 @@ static void sswap_page_evict_format_send(struct sswap_cb *cb, u64 buf, u64 roffs
 	struct sswap_evict_rdma_info *info = &cb->send_evict_buf;
 	u32 rkey = 0;
 
-	pr_info("%s: setting rdma rkey\n", __FUNCTION__);
+	pr_info("%s: setting remote offset %lu\n", __FUNCTION__, roffset);
 	// rkey = sswap_rdma_rkey(cb, buf, !cb->server_invalidate);
 	info->buf = htonll(buf);
 	info->rkey = htonl(rkey);

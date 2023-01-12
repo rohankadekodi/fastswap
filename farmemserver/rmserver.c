@@ -267,8 +267,6 @@ static unsigned int queue_ctr = 0;
 
 static int server_recv(struct rmserver_cb *cb, struct ibv_wc *wc)
 {
-	printf("server received request at cb %p\n", cb);
-
 	if (wc->byte_len != sizeof(cb->recv_buf)) {
 		fprintf(stderr, "Received bogus data, size %d\n", wc->byte_len);
 		return -1;
@@ -281,6 +279,8 @@ static int server_recv(struct rmserver_cb *cb, struct ibv_wc *wc)
 	cb->request_type = (enum request_type)be32toh(cb->recv_buf.request_type);
 
 	cb->req_state = RDMA_RECEIVED;
+
+	printf("server received request of remote offset = %llu\n", cb->remote_offset);
 
 	return 0;
 }
@@ -557,41 +557,41 @@ err2:
 // 	}
 // }
 
-static void *cq_thread(void *arg)
-{
-	struct rmserver_cb *cb = (struct rmserver_cb *)arg;
-	struct ibv_cq *ev_cq;
-	void *ev_ctx;
-	int ret;
+// static void *cq_thread(void *arg)
+// {
+// 	struct rmserver_cb *cb = (struct rmserver_cb *)arg;
+// 	struct ibv_cq *ev_cq;
+// 	void *ev_ctx;
+// 	int ret;
 	
-	while (1) {	
-		pthread_testcancel();
+// 	while (1) {	
+// 		pthread_testcancel();
 
-		printf("waiting for event in %p\n", cb);
-		ret = ibv_get_cq_event(cb->channel, &ev_cq, &ev_ctx);
-		if (ret) {
-			fprintf(stderr, "Failed to get cq event!\n");
-			pthread_exit(NULL);
-		}
-		printf("Got cq event in %p\n", cb);
+// 		printf("waiting for event in %p\n", cb);
+// 		ret = ibv_get_cq_event(cb->channel, &ev_cq, &ev_ctx);
+// 		if (ret) {
+// 			fprintf(stderr, "Failed to get cq event!\n");
+// 			pthread_exit(NULL);
+// 		}
+// 		printf("Got cq event in %p\n", cb);
 
-		if (ev_cq != cb->cq) {
-			fprintf(stderr, "Unknown CQ!\n");
-			pthread_exit(NULL);
-		}
-		ret = ibv_req_notify_cq(cb->cq, 0);
-		if (ret) {
-			fprintf(stderr, "Failed to set notify!\n");
-			pthread_exit(NULL);
-		}
+// 		if (ev_cq != cb->cq) {
+// 			fprintf(stderr, "Unknown CQ!\n");
+// 			pthread_exit(NULL);
+// 		}
+// 		ret = ibv_req_notify_cq(cb->cq, 0);
+// 		if (ret) {
+// 			fprintf(stderr, "Failed to set notify!\n");
+// 			pthread_exit(NULL);
+// 		}
 
-		printf("calling rmserver_cq_event_handler\n");
-		ret = rmserver_cq_event_handler(cb);
-		ibv_ack_cq_events(cb->cq, 1);
-		if (ret)
-			pthread_exit(NULL);
-	}
-}
+// 		printf("calling rmserver_cq_event_handler\n");
+// 		ret = rmserver_cq_event_handler(cb);
+// 		ibv_ack_cq_events(cb->cq, 1);
+// 		if (ret)
+// 			pthread_exit(NULL);
+// 	}
+// }
 
 static void rmserver_format_send(struct rmserver_cb *cb, char *buf, struct ibv_mr *mr, uint64_t roffset, enum request_type req)
 {
@@ -669,6 +669,8 @@ void* rmserver_test_server(void *arg)
 			printf("send completing error %d\n", wc.status);
 			return NULL;
 		}
+
+		printf("SENDING HAS BEEN COMPLETED\n");
 
 		// sem_wait(&cb->sem);
 		// if (cb->req_state != RDMA_RESPONSE_SENT) {
@@ -879,10 +881,10 @@ int main(int argc, char **argv)
 			fprintf(stderr, "ibv_post_recv failed: %d\n", ret);
 		}
 		
-		ret = pthread_create(&cb->cqthread, NULL, cq_thread, cb);
-		if (ret) {
-			perror("pthread_create");
-		}
+		// ret = pthread_create(&cb->cqthread, NULL, cq_thread, cb);
+		// if (ret) {
+		// 	perror("pthread_create");
+		// }
 
 		ret = pthread_create(&cb->test_thread, NULL, rmserver_test_server, cb);
 		if (ret) {
